@@ -113,9 +113,9 @@ function mg_brand_bar_styles_scripts() {
     .mg-brand-bar-scroll::-webkit-scrollbar {
         display: none;
     }
-    </style>
+    </style>';
 
-    <script>
+    echo '<script>
     document.addEventListener("DOMContentLoaded", function() {
         const slider = document.getElementById("mgBrandScroll");
         let isDown = false;
@@ -196,7 +196,6 @@ class MG_Category_Checkbox_Widget extends WP_Widget {
 
         $title         = isset( $instance['title'] ) ? $instance['title'] : __( 'Product Categories', 'woocommerce' );
         $orderby       = 'name';
-        $count         = true;
         $hierarchical  = true;
         $hide_empty    = false;
 
@@ -233,12 +232,11 @@ class MG_Category_Checkbox_Widget extends WP_Widget {
                 $cat_link = add_query_arg( 'pwb-brand', $current_brand, $cat_link );
             }
 
-            $cat_count = $count ? ' (' . $cat->count . ')' : '';
-
+            // Display only category name, remove product count
             echo '<li class="mg-category-item">';
             echo '<label>';
             echo '<input type="checkbox" name="product_cat" value="' . esc_attr( $cat->slug ) . '" ' . $checked . ' data-category="' . esc_attr( $cat->slug ) . '" data-cat-link="' . esc_url( $cat_link ) . '" class="mg-cat-checkbox">';
-            echo ' ' . esc_html( $cat->name ) . wp_kses_post( $cat_count );
+            echo ' ' . esc_html( $cat->name );
             echo '</label>';
             echo '</li>';
         }
@@ -247,7 +245,6 @@ class MG_Category_Checkbox_Widget extends WP_Widget {
         echo $args['after_widget'];
     }
 }
-
 
 // Register the custom widget
 function mg_register_category_widget() {
@@ -333,20 +330,20 @@ function mg_checkbox_styles() {
         padding: 8px 0;
         border-bottom: 1px solid #eee;
     }
-    .mg-category-item:last-child {
-        border-bottom: none;
-    }
     .mg-category-item label {
         display: flex;
-        align-items: center;
+        align-items: flex-start;
+        gap: 8px;
         cursor: pointer;
         font-size: 14px;
+        line-height: 1.3;
     }
     .mg-cat-checkbox {
-        margin-right: 8px;
+        flex-shrink: 0;
+        margin-top: 2px;
         cursor: pointer;
-        width: 16px;
-        height: 16px;
+        width: 18px;
+        height: 18px;
     }
     .mg-category-item label:hover {
         color: #0073aa;
