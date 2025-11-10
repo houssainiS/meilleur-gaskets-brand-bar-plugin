@@ -79,6 +79,11 @@ function mg_brand_bar_styles_scripts() {
     }
 
     echo '<style>
+    .woocommerce-result-count {
+    display: none !important;
+}
+
+
     .mg-brand-bar-wrapper {
         overflow: hidden;
         margin-bottom: 30px;
