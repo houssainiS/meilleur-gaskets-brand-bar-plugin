@@ -423,7 +423,7 @@ function custom_hide_cart_prices() {
 }
 
 // =========================================================
-// 3. Checkout Page Specific Styles (Show Resume, Hide Prices)
+// 3. Checkout Page Specific Styles (Show Resume, Hide Prices, Show Image/Quantity)
 // =========================================================
 
 add_action('wp_head', 'final_custom_checkout_styles');
@@ -448,21 +448,16 @@ function final_custom_checkout_styles() {
             display: none !important;
         }
 
-        /* === B. Clean up the default Product Resume (Optional, but recommended) === */
+        /* === B. Clean up the default Product Resume (Removed Image/Quantity Hiding) === */
         
-        /* Hides the product image */
-        .wc-block-components-order-summary-item__image {
-            display: none !important;
-        }
-        
-        /* Hides the extra description/metadata for the product */
+        /* The image and quantity are now visible, so we only hide the product metadata description */
         .wc-block-components-product-metadata {
             display: none !important;
         }
         
-        /* Adjust spacing for cleaner appearance */
+        /* Adjust spacing back to normal since the image is visible */
         .wc-block-components-order-summary-item__description {
-            margin-left: 0 !important;
+            /* Remove the previous margin-left: 0 !important; to align with the visible image */
         }
 
     </style>';
