@@ -463,4 +463,36 @@ function final_custom_checkout_styles() {
     </style>';
 }
 
+
+// =========================================================
+// 4. Mini-Cart/Cart Drawer Total Hiding
+// =========================================================
+
+add_action('wp_head', 'custom_hide_mini_cart_total');
+/**
+ * Hides the "Sous-total/Subtotal" price line in the sliding Mini-Cart (Cart Drawer).
+ * Uses high-specificity CSS to override conflicting theme styles.
+ */
+function custom_hide_mini_cart_total() {
+    // This targets the specific class you provided, adding the parent element to increase priority.
+    echo '<style>
+        /* High-specificity rule to hide the subtotal/total line in the standard Mini-Cart widget */
+        .widget_shopping_cart_content .woocommerce-mini-cart__total.total {
+            display: none !important;
+        }
+
+        /* Rule for the new WooCommerce Block Mini-Cart if your theme uses it */
+        .wc-block-mini-cart__footer .wc-block-components-totals-wrapper {
+            display: none !important;
+        }
+
+        /* Catch-all for other potential Mini-Cart wrapper classes */
+        .woocommerce-mini-cart__total,
+        .mini-cart-total,
+        .cart-widget-total {
+            display: none !important;
+        }
+    </style>';
+}
+
 ?>
