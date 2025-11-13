@@ -357,4 +357,82 @@ function mg_checkbox_styles() {
 }
 add_action( 'wp_footer', 'mg_checkbox_styles' );
 
+///////////////////////////////
+// Hide prices and show minimal checkout summary
+
+// Always set product price to 0 if empty, so checkout works
+add_filter('woocommerce_product_get_price', function($price, $product) {
+    return $price ?: 0;
+}, 10, 2);
+
+add_filter('woocommerce_product_get_regular_price', function($price, $product) {
+    return $price ?: 0;
+}, 10, 2);
+
+// Hide price text on frontend
+add_filter('woocommerce_get_price_html', '__return_empty_string');
+add_filter('woocommerce_cart_item_price', '__return_empty_string');
+add_filter('woocommerce_cart_item_subtotal', '__return_empty_string');
+
+// Disable payment (acts as request order)
+add_filter('woocommerce_cart_needs_payment', '__return_false');
+
+// Hide coupon form
+add_filter('woocommerce_coupons_enabled', '__return_false');
+
+// Allow checkout even with 0 prices
+add_filter('woocommerce_cart_total', function($value) {
+    return '';
+});
+
+// CSS for cart + checkout pages
+add_action('wp_head', function() {
+    if (is_cart() || is_checkout()) {
+        echo '<style>
+            /* Hide all price/total blocks in cart and checkout */
+            .wc-block-components-totals-wrapper,
+            .wc-block-components-totals-item,
+            .wp-block-woocommerce-cart-order-summary-block,
+            .wp-block-woocommerce-checkout-order-summary-block,
+            .wc-block-components-checkout-order-summary__title-price,
+            .wc-block-components-order-summary-item__individual-price,
+            .wc-block-components-order-summary-item__total-price,
+            .price,
+            .woocommerce-Price-amount,
+            .wc-block-components-product-price {
+                display: none !important;
+                visibility: hidden !important;
+            }
+
+            /* Cart page: keep checkout button visible */
+            .is-cart .wc-block-cart__submit-button,
+            .is-cart .wc-block-components-button {
+                display: inline-flex !important;
+                visibility: visible !important;
+            }
+        </style>';
+    }
+});
+
+// Custom minimal order summary: names + quantities only on checkout
+add_action('woocommerce_before_checkout_form', function() {
+    if (!is_checkout()) return;
+
+    $cart = WC()->cart->get_cart();
+    if (!$cart) return;
+
+    echo '<div class="custom-order-summary" style="margin-bottom:20px; border:1px solid #ddd; padding:10px; border-radius:5px;">';
+    echo '<h2 style="margin-top:0;">Résumé de la commande</h2>';
+    echo '<ul style="list-style:none; padding-left:0;">';
+    foreach ($cart as $cart_item) {
+        $product = $cart_item['data'];
+        $name = $product->get_name();
+        $qty = $cart_item['quantity'];
+        echo '<li style="margin-bottom:5px;">' . esc_html($qty) . ' × ' . esc_html($name) . '</li>';
+    }
+    echo '</ul>';
+    echo '</div>';
+});
+
+
 ?>
