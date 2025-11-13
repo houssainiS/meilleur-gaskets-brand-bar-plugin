@@ -526,6 +526,26 @@ function redirect_guest_users_from_shop_cart() {
     }
 }
 
+// =========================================================
+// 6. Hide prices on the Order Received / Thank You page
+// =========================================================
+add_action('wp_head', 'custom_hide_order_received_prices');
+function custom_hide_order_received_prices() {
+    if (!is_order_received_page()) return;
+
+    echo '<style>
+        /* Hide all product totals in the order table */
+        .woocommerce-table--order-details .product-total,
+        .woocommerce-table--order-details tfoot th,
+        .woocommerce-table--order-details tfoot td,
+        /* Hide the total in the order overview block */
+        .woocommerce-order-overview__total {
+            display: none !important;
+            visibility: hidden !important;
+        }
+    </style>';
+}
+
 
 
 ?>
