@@ -495,4 +495,37 @@ function custom_hide_mini_cart_total() {
     </style>';
 }
 
+// =========================================================
+// 5. Restrict Shop, Cart, and Mini-Cart for Logged-Out Users
+// =========================================================
+
+add_action('template_redirect', 'redirect_guest_users_from_shop_cart');
+/**
+ * Redirects non-logged-in users trying to access the Shop, Cart, or Mini-Cart.
+ * The redirect sends them to the default WordPress login page, and then returns 
+ * them to the page they were trying to access after a successful login.
+ */
+function redirect_guest_users_from_shop_cart() {
+    // 1. Check if the user is NOT logged in.
+    if ( ! is_user_logged_in() ) {
+        
+        // 2. Define the pages we want to restrict.
+        // is_shop() checks the main "Catalogue" page.
+        // is_cart() checks the main Cart page.
+        // is_woocommerce() checks WooCommerce pages in general (including product pages).
+        if ( is_shop() || is_cart() || is_woocommerce() ) {
+            
+            // 3. Perform the secure redirect.
+            // auth_redirect() is the best function for this:
+            // - It sends them to the WP login page.
+            // - After they log in, it automatically redirects them back to the 
+            //   original page (e.g., the Cart or Shop page).
+            auth_redirect();
+            exit(); // Ensure no further code is executed
+        }
+    }
+}
+
+
+
 ?>
