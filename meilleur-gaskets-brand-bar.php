@@ -357,10 +357,13 @@ function mg_checkbox_styles() {
 }
 add_action( 'wp_footer', 'mg_checkbox_styles' );
 
-///////////////////////////////
-// Hide prices and show minimal checkout summary
+// =========================================================
+// 1. General Filters: Ordering Functionality (Applies Everywhere)
+// =========================================================
 
-// Always set product price to 0 if empty, so checkout works
+/**
+ * Ensures products can be ordered by setting price to 0 if empty.
+ */
 add_filter('woocommerce_product_get_price', function($price, $product) {
     return $price ?: 0;
 }, 10, 2);
@@ -369,70 +372,100 @@ add_filter('woocommerce_product_get_regular_price', function($price, $product) {
     return $price ?: 0;
 }, 10, 2);
 
-// Hide price text on frontend
+/**
+ * Hides price text wherever it appears (shop, cart, checkout items).
+ */
 add_filter('woocommerce_get_price_html', '__return_empty_string');
 add_filter('woocommerce_cart_item_price', '__return_empty_string');
 add_filter('woocommerce_cart_item_subtotal', '__return_empty_string');
 
-// Disable payment (acts as request order)
+/**
+ * Disables payment and hides coupon forms.
+ */
 add_filter('woocommerce_cart_needs_payment', '__return_false');
-
-// Hide coupon form
 add_filter('woocommerce_coupons_enabled', '__return_false');
 
-// Allow checkout even with 0 prices
+/**
+ * Allows checkout with 0 prices.
+ */
 add_filter('woocommerce_cart_total', function($value) {
     return '';
 });
 
-// CSS for cart + checkout pages
-add_action('wp_head', function() {
-    if (is_cart() || is_checkout()) {
-        echo '<style>
-            /* Hide all price/total blocks in cart and checkout */
-            .wc-block-components-totals-wrapper,
-            .wc-block-components-totals-item,
-            .wp-block-woocommerce-cart-order-summary-block,
-            .wp-block-woocommerce-checkout-order-summary-block,
-            .wc-block-components-checkout-order-summary__title-price,
-            .wc-block-components-order-summary-item__individual-price,
-            .wc-block-components-order-summary-item__total-price,
-            .price,
-            .woocommerce-Price-amount,
-            .wc-block-components-product-price {
-                display: none !important;
-                visibility: hidden !important;
-            }
+// =========================================================
+// 2. Cart Page Specific Styles (Hide Totals/Prices)
+// =========================================================
 
-            /* Cart page: keep checkout button visible */
-            .is-cart .wc-block-cart__submit-button,
-            .is-cart .wc-block-components-button {
-                display: inline-flex !important;
-                visibility: visible !important;
-            }
-        </style>';
-    }
-});
+add_action('wp_head', 'custom_hide_cart_prices');
+function custom_hide_cart_prices() {
+    if (!is_cart()) return;
 
-// Custom minimal order summary: names + quantities only on checkout
-add_action('woocommerce_before_checkout_form', function() {
+    echo '<style>
+        /* Hide all prices, totals, and the default summary block on the cart page */
+        .wc-block-cart-item__prices,
+        .wc-block-cart-item__total-price-and-sale-badge-wrapper,
+        .wc-block-cart-item__total,
+        .wc-block-components-product-price,
+        .wc-block-components-totals-wrapper,
+        .wc-block-components-totals-item,
+        .wp-block-woocommerce-cart-order-summary-block {
+            display: none !important;
+            visibility: hidden !important;
+        }
+        
+        /* Ensure the cart checkout button remains visible */
+        .wc-block-cart__submit-button,
+        .wc-block-components-button {
+            display: inline-flex !important;
+            visibility: visible !important;
+        }
+    </style>';
+}
+
+// =========================================================
+// 3. Checkout Page Specific Styles (Show Resume, Hide Prices)
+// =========================================================
+
+add_action('wp_head', 'final_custom_checkout_styles');
+function final_custom_checkout_styles() {
     if (!is_checkout()) return;
 
-    $cart = WC()->cart->get_cart();
-    if (!$cart) return;
+    echo '<style>
+        /* === A. Hide All Price and Total Elements === */
+        
+        /* Hides the totals block (Subtotal, Tax, Shipping) */
+        [data-block-name="woocommerce/checkout-order-summary-totals-block"],
+        /* Hides the main title price (Total at the top) */
+        .wc-block-components-checkout-order-summary__title-price,
+        /* Hides the totals at the very bottom (Subtotal, Total) */
+        .wc-block-components-totals-footer-item,
+        .wc-block-components-totals-item__value,
+        /* Hides individual prices and total price per item */
+        .wc-block-components-order-summary-item__individual-price,
+        .wc-block-components-order-summary-item__total-price,
+        /* Hides screen reader text for prices */
+        span.screen-reader-text[aria-hidden="false"] {
+            display: none !important;
+        }
 
-    echo '<div class="custom-order-summary" style="margin-bottom:20px; border:1px solid #ddd; padding:10px; border-radius:5px;">';
-    echo '<h2 style="margin-top:0;">Résumé de la commande</h2>';
-    echo '<ul style="list-style:none; padding-left:0;">';
-    foreach ($cart as $cart_item) {
-        $product = $cart_item['data'];
-        $name = $product->get_name();
-        $qty = $cart_item['quantity'];
-        echo '<li style="margin-bottom:5px;">' . esc_html($qty) . ' × ' . esc_html($name) . '</li>';
-    }
-    echo '</ul>';
-    echo '</div>';
-});
+        /* === B. Clean up the default Product Resume (Optional, but recommended) === */
+        
+        /* Hides the product image */
+        .wc-block-components-order-summary-item__image {
+            display: none !important;
+        }
+        
+        /* Hides the extra description/metadata for the product */
+        .wc-block-components-product-metadata {
+            display: none !important;
+        }
+        
+        /* Adjust spacing for cleaner appearance */
+        .wc-block-components-order-summary-item__description {
+            margin-left: 0 !important;
+        }
 
+    </style>';
+}
 
 ?>
