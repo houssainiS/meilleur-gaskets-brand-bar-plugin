@@ -546,6 +546,379 @@ function custom_hide_order_received_prices() {
     </style>';
 }
 
+//////////catalogue ////////////
+
+/* ---------- Brand Catalogue CPT + PDF uploader + Frontend Catalogue ---------- */
+/* Add to your Meilleur Gaskets Brand Bar plugin file */
+
+if ( ! defined( 'ABSPATH' ) ) {
+    exit;
+}
+
+/**
+ * 1) Register CPT: mg_brand_catalogue
+ */
+function mg_register_brand_catalogue_cpt() {
+    $labels = array(
+        'name'               => __( 'Brand Catalogues', 'mg' ),
+        'singular_name'      => __( 'Brand Catalogue', 'mg' ),
+        'menu_name'          => __( 'Brand Catalogues', 'mg' ),
+        'name_admin_bar'     => __( 'Brand Catalogue', 'mg' ),
+        'add_new'            => __( 'Add New', 'mg' ),
+        'add_new_item'       => __( 'Add New Catalogue', 'mg' ),
+        'new_item'           => __( 'New Catalogue', 'mg' ),
+        'edit_item'          => __( 'Edit Catalogue', 'mg' ),
+        'view_item'          => __( 'View Catalogue', 'mg' ),
+        'all_items'          => __( 'All Catalogues', 'mg' ),
+        'search_items'       => __( 'Search Catalogues', 'mg' ),
+        'not_found'          => __( 'No catalogues found.', 'mg' ),
+    );
+
+    $args = array(
+        'labels'             => $labels,
+        'public'             => false, // not public by itself; accessible via frontend list
+        'publicly_queryable' => true,
+        'show_ui'            => true,
+        'show_in_menu'       => true,
+        'menu_position'      => 58,
+        'menu_icon'          => 'dashicons-media-document',
+        'supports'           => array( 'title' ),
+        'capability_type'    => 'post',
+    );
+
+    register_post_type( 'mg_brand_catalogue', $args );
+}
+add_action( 'init', 'mg_register_brand_catalogue_cpt' );
+
+/**
+ * 2) Meta box: Brand selector + PDF upload (attachment ID)
+ */
+function mg_add_catalogue_meta_box() {
+    add_meta_box(
+        'mg_catalogue_meta',
+        __( 'Brand Catalogue Data', 'mg' ),
+        'mg_catalogue_meta_box_callback',
+        'mg_brand_catalogue',
+        'normal',
+        'high'
+    );
+}
+add_action( 'add_meta_boxes', 'mg_add_catalogue_meta_box' );
+
+function mg_catalogue_meta_box_callback( $post ) {
+    wp_nonce_field( 'mg_catalogue_meta_save', 'mg_catalogue_meta_nonce' );
+
+    $selected_term_id = (int) get_post_meta( $post->ID, '_mg_brand_term_id', true );
+    $pdf_attachment_id = (int) get_post_meta( $post->ID, '_mg_brand_pdf', true );
+    $pdf_url = $pdf_attachment_id ? wp_get_attachment_url( $pdf_attachment_id ) : '';
+
+    $brands = get_terms( array(
+        'taxonomy' => 'pwb-brand',
+        'hide_empty' => false,
+    ) );
+
+    echo '<p><label><strong>' . esc_html__( 'Select brand', 'mg' ) . '</strong></label></p>';
+    echo '<p><select name="mg_brand_term_id" style="width:100%;">';
+    echo '<option value="">' . esc_html__( '-- Select a brand --', 'mg' ) . '</option>';
+    if ( ! empty( $brands ) && ! is_wp_error( $brands ) ) {
+        foreach ( $brands as $b ) {
+            printf(
+                '<option value="%d" %s>%s</option>',
+                intval( $b->term_id ),
+                selected( $selected_term_id, $b->term_id, false ),
+                esc_html( $b->name )
+            );
+        }
+    } else {
+        echo '<option value="">' . esc_html__( 'No brands found', 'mg' ) . '</option>';
+    }
+    echo '</select></p>';
+
+    // --- DELETED DUPLICATE FUNCTION FROM HERE ---
+
+    // PDF uploader markup
+    echo '<p><label><strong>' . esc_html__( 'Catalogue PDF', 'mg' ) . '</strong></label></p>';
+    echo '<p>
+        <input type="hidden" id="mg_brand_pdf" name="mg_brand_pdf" value="' . esc_attr( $pdf_attachment_id ) . '">
+        <button type="button" class="button" id="mg_upload_pdf_button">' . ( $pdf_attachment_id ? esc_html__( 'Replace PDF', 'mg' ) : esc_html__( 'Upload PDF', 'mg' ) ) . '</button>
+        <span id="mg_pdf_preview" style="margin-left:10px;">' . ( $pdf_url ? '<a href="' . esc_url( $pdf_url ) . '" target="_blank">' . esc_html__( 'View current PDF', 'mg' ) . '</a>' : esc_html__( 'No file selected', 'mg' ) ) . '</span>
+        <button type="button" style="margin-left:10px;" class="button" id="mg_remove_pdf_button">' . esc_html__( 'Remove', 'mg' ) . '</button>
+    </p>';
+
+    ?>
+    <script>
+    (function($){
+        var frame;
+        $('#mg_upload_pdf_button').on('click', function(e){
+            e.preventDefault();
+            if ( frame ) frame.open();
+            frame = wp.media({
+                title: '<?php echo esc_js( "Select or Upload PDF" ); ?>',
+                button: { text: '<?php echo esc_js( "Use this PDF" ); ?>' },
+                library: { type: '' },
+                multiple: false
+            });
+            frame.on( 'select', function() {
+                var attachment = frame.state().get('selection').first().toJSON();
+                if (attachment.mime && attachment.mime !== 'application/pdf') {
+                    if (!attachment.url || attachment.url.indexOf('.pdf') === -1) {
+                        alert('<?php echo esc_js( "Please select a PDF file." ); ?>');
+                        return;
+                    }
+                }
+                $('#mg_brand_pdf').val(attachment.id);
+                $('#mg_pdf_preview').html('<a href="'+attachment.url+'" target="_blank">View current PDF</a>');
+                $('#mg_upload_pdf_button').text('Replace PDF');
+            });
+            frame.open();
+        });
+
+        $('#mg_remove_pdf_button').on('click', function(e){
+            e.preventDefault();
+            $('#mg_brand_pdf').val('');
+            $('#mg_pdf_preview').text('No file selected');
+            $('#mg_upload_pdf_button').text('Upload PDF');
+        });
+
+    })(jQuery);
+    </script>
+    <?php
+}
+
+/**
+ * Save meta
+ */
+function mg_save_catalogue_meta( $post_id, $post ) {
+    if ( ! isset( $_POST['mg_catalogue_meta_nonce'] ) || ! wp_verify_nonce( $_POST['mg_catalogue_meta_nonce'], 'mg_catalogue_meta_save' ) ) return;
+    if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) return;
+    if ( ! current_user_can( 'edit_post', $post_id ) ) return;
+
+    if ( isset( $_POST['mg_brand_term_id'] ) ) {
+        update_post_meta( $post_id, '_mg_brand_term_id', intval( $_POST['mg_brand_term_id'] ) );
+    } else {
+        delete_post_meta( $post_id, '_mg_brand_term_id' );
+    }
+
+    if ( isset( $_POST['mg_brand_pdf'] ) && $_POST['mg_brand_pdf'] !== '' ) {
+        update_post_meta( $post_id, '_mg_brand_pdf', intval( $_POST['mg_brand_pdf'] ) );
+    } else {
+        delete_post_meta( $post_id, '_mg_brand_pdf' );
+    }
+}
+add_action( 'save_post_mg_brand_catalogue', 'mg_save_catalogue_meta', 10, 2 );
+
+/**
+ * 3) Helper: get catalogue post by brand term_id
+ */
+function mg_get_catalogue_by_brand_term_id( $term_id ) {
+    $args = array(
+        'post_type'      => 'mg_brand_catalogue',
+        'meta_key'       => '_mg_brand_term_id',
+        'meta_value'     => intval( $term_id ),
+        'post_status'    => 'publish',
+        'posts_per_page' => 1,
+    );
+    $q = new WP_Query( $args );
+    return $q->have_posts() ? $q->posts[0] : null;
+}
+
+/**
+ * 4) Serve PDF inline for iframe and new tab
+ */
+function mg_serve_catalogue_pdf() {
+    // Don't run this logic in the admin area at all
+    if ( is_admin() ) {
+        return;
+    }
+
+    // Check if our specific query var is set
+    if ( ! isset( $_GET['mg_pdf_viewer'] ) ) {
+        return;
+    }
+
+    $catalogue_post_id = intval( $_GET['mg_pdf_viewer'] );
+    
+    // We must check for the post *before* clearing buffers or sending headers
+    $post = get_post( $catalogue_post_id );
+    if ( ! $post || $post->post_type !== 'mg_brand_catalogue' ) {
+        // We can't use wp_die() yet, as it will output HTML.
+        // Send a simple, clean 404.
+        header("HTTP/1.0 404 Not Found");
+        die('File not found.');
+    }
+
+    $att_id = intval( get_post_meta( $catalogue_post_id, '_mg_brand_pdf', true ) );
+    if ( ! $att_id ) {
+        header("HTTP/1.0 404 Not Found");
+        die('No PDF attached.');
+    }
+
+    $file_path = get_attached_file( $att_id );
+    if ( ! $file_path || ! file_exists( $file_path ) ) {
+        header("HTTP/1.0 404 Not Found");
+        die('PDF file missing from server.');
+    }
+
+    // --- CRITICAL SECTION ---
+    
+    // 1. Aggressively clear any and all output buffers
+    // This removes any invisible whitespace, BOMs, etc.
+    while ( ob_get_level() > 0 ) {
+        ob_end_clean();
+    }
+
+    // 2. Remove any conflicting headers that might have been set
+    // This is an extra precaution.
+    if ( function_exists('header_remove') ) {
+        header_remove('Content-Disposition');
+        header_remove('Pragma');
+        header_remove('Cache-Control');
+        header_remove('Expires');
+        header_remove('X-Content-Type-Options');
+    }
+
+    // 3. Set our own headers to force INLINE display
+    header( 'Content-Type: application/pdf' );
+    header( 'Content-Disposition: inline; filename="' . basename( $file_path ) . '"' );
+    header( 'Content-Length: ' . filesize( $file_path ) );
+    header( 'Accept-Ranges: bytes' );
+    
+    // Caching headers
+    header( 'Cache-Control: public, max-age=86400' );
+    header( 'Expires: ' . gmdate( 'D, d M Y H:i:s', time() + 86400 ) . ' GMT' );
+    
+    // Security header
+    header( 'X-Content-Type-Options: nosniff' );
+
+    // 4. Clear all system buffers one last time
+    flush();
+    
+    // 5. Read the file and send it to the browser
+    $readfile_success = readfile( $file_path );
+    
+    // 6. Stop all further WordPress execution
+    // We use die() to be absolutely certain.
+    if ($readfile_success === false) {
+        die('Failed to read file.');
+    }
+    
+    die();
+}
+
+// THIS IS THE HOOK - It should already be correct
+// We run this on 'init' at priority 0.
+add_action( 'init', 'mg_serve_catalogue_pdf', 0 );
 
 
-?>
+/**
+ * 5) Frontend shortcode
+ */
+function mg_catalogue_shortcode( $atts ) {
+    ob_start();
+
+    $brand_slug = isset( $_GET['brand'] ) ? sanitize_text_field( wp_unslash( $_GET['brand'] ) ) : '';
+
+    if ( $brand_slug ) {
+        $term = get_term_by( 'slug', $brand_slug, 'pwb-brand' );
+        if ( ! $term || is_wp_error( $term ) ) {
+            echo '<p>Brand not found.</p>';
+            return ob_get_clean();
+        }
+
+        $catalogue_post = mg_get_catalogue_by_brand_term_id( $term->term_id );
+
+        echo '<div class="mg-catalogue-detail">';
+        echo '<p><a href="' . esc_url( get_permalink() ) . '">← Back to Catalogue</a></p>';
+        echo '<h2>' . esc_html( $term->name ) . '</h2>';
+
+        if ( $catalogue_post ) {
+            $viewer_url = home_url( '?mg_pdf_viewer=' . $catalogue_post->ID );
+            echo '<p><a class="mg-download-btn" href="' . esc_url( $viewer_url ) . '" target="_blank" rel="noopener">Open PDF (new tab)</a></p>';
+            echo '<div class="mg-embed-pdf" style="max-width:100%;height:800px;overflow:auto;">';
+            echo '<iframe src="' . esc_url( $viewer_url ) . '" width="100%" height="100%" style="border:1px solid #ddd;" frameborder="0" allowfullscreen></iframe>';
+            echo '</div>';
+        } else {
+            echo '<p>No catalogue assigned for this brand.</p>';
+        }
+
+        echo '</div>';
+        return ob_get_clean();
+    }
+
+    $brands = get_terms( array(
+        'taxonomy' => 'pwb-brand',
+        'hide_empty' => false,
+    ) );
+
+    echo '<div class="mg-catalogue-grid">';
+    if ( empty( $brands ) || is_wp_error( $brands ) ) {
+        echo '<p>No brands found.</p>';
+    } else {
+        foreach ( $brands as $brand ) {
+            $term_id = $brand->term_id;
+            $term_slug = $brand->slug;
+            $brand_name = $brand->name;
+
+            $brand_img_id = get_term_meta( $term_id, 'pwb_brand_image', true );
+            $brand_img_html = $brand_img_id ? wp_get_attachment_image( $brand_img_id, 'medium' ) : '';
+
+            $catalogue_link = add_query_arg( 'brand', $term_slug, get_permalink() );
+
+            echo '<div class="mg-catalogue-card">';
+            echo '<a class="mg-catalogue-link" href="' . esc_url( $catalogue_link ) . '">';
+            if ( $brand_img_html ) {
+                echo '<div class="mg-brand-logo">' . $brand_img_html . '</div>';
+            } else {
+                echo '<div class="mg-brand-logo-placeholder">' . esc_html( $brand_name ) . '</div>';
+            }
+            echo '<div class="mg-brand-name">' . esc_html( $brand_name ) . '</div>';
+            echo '</a>';
+            echo '</div>';
+        }
+    }
+    echo '</div>';
+
+    ?>
+    <style>
+    .mg-catalogue-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px,1fr)); gap:18px; margin:20px 0; }
+    .mg-catalogue-card { border:1px solid #eee; padding:12px; text-align:center; background:#fff; border-radius:8px; box-shadow:0 1px 2px rgba(0,0,0,0.03); }
+    .mg-brand-logo img { max-height:70px; object-fit:contain; display:block; margin:0 auto 8px; }
+    .mg-brand-logo-placeholder { padding:24px 6px; font-weight:600; color:#333; }
+    .mg-brand-name { font-size:14px; margin-top:6px; color:#333; }
+    .mg-download-btn { display:inline-block; padding:8px 12px; border:1px solid #ddd; background:#f7f7f7; border-radius:6px; text-decoration:none; color:#333; margin-bottom:12px; }
+    .mg-embed-pdf iframe { min-height:600px; }
+    </style>
+    <?php
+
+    return ob_get_clean();
+}
+add_shortcode( 'mg_catalogue', 'mg_catalogue_shortcode' );
+
+/**
+ * 6) Auto-insert shortcode on page with slug 'catalogue'
+ */
+function mg_auto_insert_catalogue_shortcode( $content ) {
+    if ( is_admin() ) return $content;
+    if ( is_page() ) {
+        global $post;
+        if ( ! $post ) return $content;
+        if ( 'catalogue' === $post->post_name && ! has_shortcode( $post->post_content, 'mg_catalogue' ) ) {
+            return do_shortcode( '[mg_catalogue]' ) . $content;
+        }
+    }
+    return $content;
+}
+add_filter( 'the_content', 'mg_auto_insert_catalogue_shortcode', 20 );
+
+/**
+ * 7) Enqueue WP media uploader for CPT
+ */
+function mg_enqueue_admin_uploader($hook) {
+    global $post;
+    if (isset($post) && $post->post_type === 'mg_brand_catalogue') {
+        wp_enqueue_media();
+    }
+}
+add_action('admin_enqueue_scripts', 'mg_enqueue_admin_uploader');
+
+////////// End of Brand Catalogue module ////////////
