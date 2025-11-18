@@ -560,18 +560,18 @@ if ( ! defined( 'ABSPATH' ) ) {
  */
 function mg_register_brand_catalogue_cpt() {
     $labels = array(
-        'name'               => __( 'Brand Catalogues', 'mg' ),
-        'singular_name'      => __( 'Brand Catalogue', 'mg' ),
-        'menu_name'          => __( 'Brand Catalogues', 'mg' ),
-        'name_admin_bar'     => __( 'Brand Catalogue', 'mg' ),
-        'add_new'            => __( 'Add New', 'mg' ),
-        'add_new_item'       => __( 'Add New Catalogue', 'mg' ),
-        'new_item'           => __( 'New Catalogue', 'mg' ),
-        'edit_item'          => __( 'Edit Catalogue', 'mg' ),
-        'view_item'          => __( 'View Catalogue', 'mg' ),
-        'all_items'          => __( 'All Catalogues', 'mg' ),
-        'search_items'       => __( 'Search Catalogues', 'mg' ),
-        'not_found'          => __( 'No catalogues found.', 'mg' ),
+        'name'               => __( 'Catalogues de Brand', 'mg' ), // General name (plural)
+        'singular_name'      => __( 'Catalogue de Brand', 'mg' ),  // Singular name
+        'menu_name'          => __( 'Catalogues de Brand', 'mg' ),  // Menu title in sidebar
+        'name_admin_bar'     => __( 'Catalogue de Brand', 'mg' ),  // Name for the Admin Bar
+        'add_new'            => __( 'Ajouter Nouveau', 'mg' ),     // "Add New" button text
+        'add_new_item'       => __( 'Ajouter Nouveau Catalogue', 'mg' ), // Full "Add New Item" title
+        'new_item'           => __( 'Nouveau Catalogue', 'mg' ),    // Title when viewing a new item
+        'edit_item'          => __( 'Modifier Catalogue', 'mg' ),   // Title when editing an item
+        'view_item'          => __( 'Voir Catalogue', 'mg' ),       // "View Item" link text
+        'all_items'          => __( 'Tous les Catalogues', 'mg' ),  // Submenu link for all items
+        'search_items'       => __( 'Rechercher Catalogues', 'mg' ), // Search box text
+        'not_found'          => __( 'Aucun catalogue trouvé.', 'mg' ), // Message when no items are found
     );
 
     $args = array(
@@ -589,7 +589,6 @@ function mg_register_brand_catalogue_cpt() {
     register_post_type( 'mg_brand_catalogue', $args );
 }
 add_action( 'init', 'mg_register_brand_catalogue_cpt' );
-
 /**
  * 2) Meta box: Brand selector + PDF upload (attachment ID)
  */
@@ -619,7 +618,7 @@ function mg_catalogue_meta_box_callback( $post ) {
 
     echo '<p><label><strong>' . esc_html__( 'Select brand', 'mg' ) . '</strong></label></p>';
     echo '<p><select name="mg_brand_term_id" style="width:100%;">';
-    echo '<option value="">' . esc_html__( '-- Select a brand --', 'mg' ) . '</option>';
+    echo '<option value="">' . esc_html__( '-- Sélectionnez une Brand --', 'mg' ) . '</option>';
     if ( ! empty( $brands ) && ! is_wp_error( $brands ) ) {
         foreach ( $brands as $b ) {
             printf(
@@ -640,9 +639,9 @@ function mg_catalogue_meta_box_callback( $post ) {
     echo '<p><label><strong>' . esc_html__( 'Catalogue PDF', 'mg' ) . '</strong></label></p>';
     echo '<p>
         <input type="hidden" id="mg_brand_pdf" name="mg_brand_pdf" value="' . esc_attr( $pdf_attachment_id ) . '">
-        <button type="button" class="button" id="mg_upload_pdf_button">' . ( $pdf_attachment_id ? esc_html__( 'Replace PDF', 'mg' ) : esc_html__( 'Upload PDF', 'mg' ) ) . '</button>
-        <span id="mg_pdf_preview" style="margin-left:10px;">' . ( $pdf_url ? '<a href="' . esc_url( $pdf_url ) . '" target="_blank">' . esc_html__( 'View current PDF', 'mg' ) . '</a>' : esc_html__( 'No file selected', 'mg' ) ) . '</span>
-        <button type="button" style="margin-left:10px;" class="button" id="mg_remove_pdf_button">' . esc_html__( 'Remove', 'mg' ) . '</button>
+        <button type="button" class="button" id="mg_upload_pdf_button">' . ( $pdf_attachment_id ? esc_html__( 'Remplacer PDF', 'mg' ) : esc_html__( 'Télécharger PDF', 'mg' ) ) . '</button>
+        <span id="mg_pdf_preview" style="margin-left:10px;">' . ( $pdf_url ? '<a href="' . esc_url( $pdf_url ) . '" target="_blank">' . esc_html__( 'Voir PDF actuel', 'mg' ) . '</a>' : esc_html__( 'Aucun fichier sélectionné', 'mg' ) ) . '</span>
+        <button type="button" style="margin-left:10px;" class="button" id="mg_remove_pdf_button">' . esc_html__( 'Supprimer', 'mg' ) . '</button>
     </p>';
 
     ?>
@@ -952,3 +951,57 @@ add_action('wp_footer', function() {
 /// remove language selector in the admin login 
 
 add_filter( 'login_display_language_dropdown', '__return_false' );
+
+// remove few things from products manager admin : 
+
+add_action('admin_menu', function() {
+    
+    // 1. Check the Role
+    $user = wp_get_current_user();
+    if (in_array('products_manager', (array) $user->roles)) {
+
+        // --- PART A: Standard Removals ---
+        remove_menu_page('edit.php');           // Posts
+        remove_menu_page('edit-comments.php');  // Comments
+        remove_menu_page('tools.php');          // Tools
+        remove_menu_page('edit.php?post_type=elementor_library'); // Elementor
+        remove_menu_page('woocommerce-marketing'); // Marketing
+
+        // Remove Main WooCommerce & Home
+        remove_menu_page('woocommerce');
+        remove_menu_page('wc-admin'); 
+        
+        // Remove the standard Analytics menu that appeared when the capability was granted
+        // This targets the top-level "Analytics" menu that appeared when you enabled reports.
+        remove_menu_page('wc-admin&path=/analytics'); 
+        
+        // Remove submenus to be safe
+        remove_submenu_page('woocommerce', 'wc-settings'); 
+        remove_submenu_page('woocommerce', 'wc-status'); 
+
+        // --- PART B: "Search and Destroy" for Payments (Keep this to prevent the payments menu from returning) ---
+        global $menu;
+        
+        if (!empty($menu)) {
+            foreach ($menu as $key => $item) {
+                // $item[2] is the URL/Slug. We check if it contains "PAYMENTS" or "checkout"
+                if (strpos($item[2], 'PAYMENTS_MENU_ITEM') !== false || strpos($item[2], 'tab=checkout') !== false) {
+                    unset($menu[$key]);
+                }
+            }
+        }
+
+        // --- PART C: Add Custom "Orders" Menu ---
+        add_menu_page(
+            'Commandes', 
+            'Commandes', 
+            'edit_shop_orders', 
+            'edit.php?post_type=shop_order', 
+            '', 
+            'dashicons-cart', 
+            6
+        );
+
+        // --- PART D: REMOVED. The desired Analytics menu appears due to the capability alone.
+    }
+}, 9999); // High priority to ensure it runs last
