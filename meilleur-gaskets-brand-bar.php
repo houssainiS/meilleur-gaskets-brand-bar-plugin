@@ -922,3 +922,33 @@ function mg_enqueue_admin_uploader($hook) {
 add_action('admin_enqueue_scripts', 'mg_enqueue_admin_uploader');
 
 ////////// End of Brand Catalogue module ////////////
+
+
+
+//remove duplicated show password
+add_action('wp_footer', function() {
+  ?>
+  <script>
+  (function(){
+    function removeStaticPasswordButtons(){
+      document.querySelectorAll('.password-input input[type="password"]').forEach(function(input){
+        var btn = input.parentElement.querySelector('button.show-password-input');
+        if(btn) {
+          // remove only the static sibling button (keeps dynamically inserted ones)
+          btn.remove();
+        }
+      });
+    }
+    document.addEventListener('DOMContentLoaded', removeStaticPasswordButtons);
+    // also observe in case markup changes later
+    var obs = new MutationObserver(removeStaticPasswordButtons);
+    obs.observe(document.body, { childList: true, subtree: true });
+  })();
+  </script>
+  <?php
+}, 999);
+
+
+/// remove language selector in the admin login 
+
+add_filter( 'login_display_language_dropdown', '__return_false' );
