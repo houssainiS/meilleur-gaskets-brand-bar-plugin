@@ -971,27 +971,32 @@ add_action('admin_menu', function() {
         remove_menu_page('woocommerce');
         remove_menu_page('wc-admin'); 
         
-        // Remove the standard Analytics menu that appeared when the capability was granted
-        // This targets the top-level "Analytics" menu that appeared when you enabled reports.
+        // Remove Analytics (The one auto-added by capability)
         remove_menu_page('wc-admin&path=/analytics'); 
+
+        // Remove Metform's default menu
+        remove_menu_page('metform-menu'); 
         
         // Remove submenus to be safe
         remove_submenu_page('woocommerce', 'wc-settings'); 
         remove_submenu_page('woocommerce', 'wc-status'); 
 
-        // --- PART B: "Search and Destroy" for Payments (Keep this to prevent the payments menu from returning) ---
+        // --- PART B: "Search and Destroy" for Payments ---
         global $menu;
-        
         if (!empty($menu)) {
             foreach ($menu as $key => $item) {
-                // $item[2] is the URL/Slug. We check if it contains "PAYMENTS" or "checkout"
+                // Remove Payments
                 if (strpos($item[2], 'PAYMENTS_MENU_ITEM') !== false || strpos($item[2], 'tab=checkout') !== false) {
                     unset($menu[$key]);
+                }
+                // Remove Metform if it appears via a different ID
+                if (strpos($item[2], 'metform') !== false) {
+                   // Optional: unset($menu[$key]);
                 }
             }
         }
 
-        // --- PART C: Add Custom "Orders" Menu ---
+        // --- PART C: Add Custom "Commandes" (Orders) Menu ---
         add_menu_page(
             'Commandes', 
             'Commandes', 
@@ -1002,6 +1007,30 @@ add_action('admin_menu', function() {
             6
         );
 
-        // --- PART D: REMOVED. The desired Analytics menu appears due to the capability alone.
+        // --- PART D: Add Custom "Forms" Menu (Pointing to ENTRIES) ---
+        add_menu_page(
+            'Form Entries',                  // Page Title
+            'Formulaires',                   // Menu Title (French: Formulaires)
+            'read',                          // Capability 
+            'edit.php?post_type=metform-entry', // <--- CHANGED URL TO ENTRIES
+            '',                      
+            'dashicons-email',               // Icon (Email/Inbox style fits entries better)
+            7                        
+        );
     }
-}, 9999); // High priority to ensure it runs last
+}, 9999);
+
+/**
+ * FIX: Allow products_manager to edit Metform Forms AND Entries
+ * This forces Metform to use standard 'edit_posts' capabilities 
+ * instead of custom hidden ones.
+ */
+add_filter( 'register_post_type_args', function( $args, $post_type ) {
+    // Target BOTH Metform Forms AND Metform Entries
+    if ( 'metform-form' === $post_type || 'metform-entry' === $post_type ) {
+        // Force it to use standard post capabilities
+        $args['capability_type'] = 'post';
+        $args['map_meta_cap']    = true;
+    }
+    return $args;
+}, 999, 2 );
