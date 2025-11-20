@@ -1046,3 +1046,19 @@ add_filter( 'register_post_type_args', function( $args, $post_type ) {
     }
     return $args;
 }, 999, 2 );
+
+
+//adding products details to the products 
+add_action( 'woocommerce_single_product_summary', 'show_product_details_acf', 25 );
+
+function show_product_details_acf() {
+    if( function_exists('get_field') ) {
+        echo '<div class="product-details-table">';
+        echo '<p><strong>Référence:</strong> ' . get_field('reference') . '</p>';
+        echo '<p><strong>OEM:</strong> ' . get_field('oem') . '</p>';
+        echo '<p><strong>Désignation:</strong> ' . get_field('designation') . '</p>';
+        echo '<p><strong>Compatible:</strong> ' . get_field('compatible') . '</p>';
+        echo '<p><strong>Type Véhicule:</strong> ' . get_field('vehicle_type') . '</p>';
+        echo '</div>';
+    }
+}
