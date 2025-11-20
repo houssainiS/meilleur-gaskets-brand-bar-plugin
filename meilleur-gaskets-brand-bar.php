@@ -961,37 +961,52 @@ add_action('admin_menu', function() {
     if (in_array('products_manager', (array) $user->roles)) {
 
         // --- PART A: Standard Removals ---
+        
+        // 1. Remove Dashboard & Media
+        remove_menu_page('index.php');          // Dashboard (Home)
+        remove_menu_page('upload.php');         // <--- REMOVES THE MEDIA MENU
+
+        // 2. Remove Standard WP Content
         remove_menu_page('edit.php');           // Posts
         remove_menu_page('edit-comments.php');  // Comments
         remove_menu_page('tools.php');          // Tools
         remove_menu_page('edit.php?post_type=elementor_library'); // Elementor
         remove_menu_page('woocommerce-marketing'); // Marketing
 
-        // Remove Main WooCommerce & Home
+        // 3. Remove Main WooCommerce & Home
         remove_menu_page('woocommerce');
         remove_menu_page('wc-admin'); 
         
-        // Remove Analytics (The one auto-added by capability)
+        // 4. Remove Analytics
         remove_menu_page('wc-admin&path=/analytics'); 
 
-        // Remove Metform's default menu
+        // 5. Remove Metform's default menu
         remove_menu_page('metform-menu'); 
         
-        // Remove submenus to be safe
+        // 6. Remove submenus to be safe
         remove_submenu_page('woocommerce', 'wc-settings'); 
         remove_submenu_page('woocommerce', 'wc-status'); 
 
-        // --- PART B: "Search and Destroy" for Payments ---
+        // --- PART B: "Search and Destroy" (For stubborn menus) ---
         global $menu;
+        
         if (!empty($menu)) {
             foreach ($menu as $key => $item) {
-                // Remove Payments
-                if (strpos($item[2], 'PAYMENTS_MENU_ITEM') !== false || strpos($item[2], 'tab=checkout') !== false) {
+                $slug = $item[2]; // The URL or ID of the menu
+
+                // 1. Remove Payments (Specific Long ID)
+                if (strpos($slug, 'PAYMENTS_MENU_ITEM') !== false || strpos($slug, 'tab=checkout') !== false) {
                     unset($menu[$key]);
                 }
-                // Remove Metform if it appears via a different ID
-                if (strpos($item[2], 'metform') !== false) {
-                   // Optional: unset($menu[$key]);
+
+                // 2. Remove Yoast SEO (Matches "wpseo_dashboard", "wpseo_workouts", etc.)
+                if (strpos($slug, 'wpseo') !== false) {
+                    unset($menu[$key]);
+                }
+                
+                // 3. Remove specific Metform duplicates if they appear
+                if (strpos($slug, 'metform') !== false && $slug !== 'edit.php?post_type=metform-entry') {
+                   // unset($menu[$key]); 
                 }
             }
         }
@@ -1007,14 +1022,14 @@ add_action('admin_menu', function() {
             6
         );
 
-        // --- PART D: Add Custom "Forms" Menu (Pointing to ENTRIES) ---
+        // --- PART D: Add Custom "Form Entries" Menu ---
         add_menu_page(
-            'Form Entries',                  // Page Title
-            'Formulaires',                   // Menu Title (French: Formulaires)
-            'read',                          // Capability 
-            'edit.php?post_type=metform-entry', // <--- CHANGED URL TO ENTRIES
+            'Form Entries',                  
+            'Formulaires',                   
+            'read',                          
+            'edit.php?post_type=metform-entry', 
             '',                      
-            'dashicons-email',               // Icon (Email/Inbox style fits entries better)
+            'dashicons-email',               
             7                        
         );
     }
@@ -1022,13 +1037,10 @@ add_action('admin_menu', function() {
 
 /**
  * FIX: Allow products_manager to edit Metform Forms AND Entries
- * This forces Metform to use standard 'edit_posts' capabilities 
- * instead of custom hidden ones.
+ * This forces Metform to use standard 'edit_posts' capabilities.
  */
 add_filter( 'register_post_type_args', function( $args, $post_type ) {
-    // Target BOTH Metform Forms AND Metform Entries
     if ( 'metform-form' === $post_type || 'metform-entry' === $post_type ) {
-        // Force it to use standard post capabilities
         $args['capability_type'] = 'post';
         $args['map_meta_cap']    = true;
     }
