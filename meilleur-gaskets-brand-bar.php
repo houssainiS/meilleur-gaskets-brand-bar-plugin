@@ -1,8 +1,8 @@
 <?php
 /*
 Plugin Name: Meilleur Gaskets Brand Bar
-Description: Displays a dynamic car brand logo bar above the WooCommerce shop page and categories with drag-to-scroll functionality. Supports bidirectional brand and category filtering with checkbox category widget.
-Version: 2.0
+Description: Displays a dynamic car brand logo bar above the WooCommerce shop page and categories with drag-to-scroll functionality. Supports bidirectional brand and category filtering with checkbox category widget. Includes secure PDF Catalogue Viewer.
+Version: 2.1
 Author: Houssaini Slimen
 */
 
@@ -12,7 +12,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 // Debug message
 add_action( 'wp_head', function() {
-    echo '<!-- Brand Plugin Loaded ✅ -->';
+    echo '';
 });
 
 // Show brand logos above shop and category pages
@@ -81,8 +81,7 @@ function mg_brand_bar_styles_scripts() {
     echo '<style>
     .woocommerce-result-count {
     display: none !important;
-}
-
+    }
 
     .mg-brand-bar-wrapper {
         overflow: hidden;
@@ -551,10 +550,6 @@ function custom_hide_order_received_prices() {
 /* ---------- Brand Catalogue CPT + PDF uploader + Frontend Catalogue ---------- */
 /* Add to your Meilleur Gaskets Brand Bar plugin file */
 
-if ( ! defined( 'ABSPATH' ) ) {
-    exit;
-}
-
 /**
  * 1) Register CPT: mg_brand_catalogue
  */
@@ -632,8 +627,6 @@ function mg_catalogue_meta_box_callback( $post ) {
         echo '<option value="">' . esc_html__( 'No brands found', 'mg' ) . '</option>';
     }
     echo '</select></p>';
-
-    // --- DELETED DUPLICATE FUNCTION FROM HERE ---
 
     // PDF uploader markup
     echo '<p><label><strong>' . esc_html__( 'Catalogue PDF', 'mg' ) . '</strong></label></p>';
@@ -810,13 +803,14 @@ add_action( 'init', 'mg_serve_catalogue_pdf', 0 );
 
 
 /**
- * 5) Frontend shortcode
+ * 5) Frontend shortcode (OPTIMIZED FOR PDF LOADER)
  */
 function mg_catalogue_shortcode( $atts ) {
     ob_start();
 
     $brand_slug = isset( $_GET['brand'] ) ? sanitize_text_field( wp_unslash( $_GET['brand'] ) ) : '';
 
+    // --- DETAIL VIEW (With PDF) ---
     if ( $brand_slug ) {
         $term = get_term_by( 'slug', $brand_slug, 'pwb-brand' );
         if ( ! $term || is_wp_error( $term ) ) {
@@ -827,66 +821,184 @@ function mg_catalogue_shortcode( $atts ) {
         $catalogue_post = mg_get_catalogue_by_brand_term_id( $term->term_id );
 
         echo '<div class="mg-catalogue-detail">';
-        echo '<p><a href="' . esc_url( get_permalink() ) . '">← Back to Catalogue</a></p>';
-        echo '<h2>' . esc_html( $term->name ) . '</h2>';
+        echo '<p><a href="' . esc_url( get_permalink() ) . '" style="text-decoration:none; font-weight:bold;">&larr; Retour au catalogue</a></p>';
+        echo '<h2 style="margin-bottom:20px;">' . esc_html( $term->name ) . '</h2>';
 
         if ( $catalogue_post ) {
             $viewer_url = home_url( '?mg_pdf_viewer=' . $catalogue_post->ID );
-            echo '<p><a class="mg-download-btn" href="' . esc_url( $viewer_url ) . '" target="_blank" rel="noopener">Open PDF (new tab)</a></p>';
-            echo '<div class="mg-embed-pdf" style="max-width:100%;height:800px;overflow:auto;">';
-            echo '<iframe src="' . esc_url( $viewer_url ) . '" width="100%" height="100%" style="border:1px solid #ddd;" frameborder="0" allowfullscreen></iframe>';
-            echo '</div>';
+            
+            // Download Button
+            echo '<p><a class="mg-download-btn" href="' . esc_url( $viewer_url ) . '" target="_blank" rel="noopener">Ouvrir le PDF (Nouvel onglet)</a></p>';
+            
+            // PDF Wrapper
+            echo '<div class="mg-embed-pdf">';
+                
+                // The Loader (Visible by default)
+                echo '<div id="mg-pdf-loader" class="mg-pdf-loader">';
+                    echo '<div class="mg-pdf-spinner">';
+                        echo '<div class="mg-spinner-ring"></div>';
+                        echo '<div class="mg-spinner-ring-inner"></div>';
+                    echo '</div>';
+                    echo '<p class="mg-loader-text">Chargement du catalogue...</p>';
+                echo '</div>';
+
+                // The Iframe (Hidden by default via CSS opacity)
+                echo '<iframe id="mg-pdf-iframe" src="' . esc_url( $viewer_url ) . '" width="100%" height="100%" frameborder="0" allowfullscreen></iframe>';
+            
+            echo '</div>'; // End Wrapper
+
         } else {
-            echo '<p>No catalogue assigned for this brand.</p>';
+            echo '<div style="padding:20px; background:#f9f9f9; border:1px solid #eee;">Désolé, aucun catalogue disponible pour cette marque pour le moment.</div>';
         }
 
         echo '</div>';
-        return ob_get_clean();
-    }
+    } 
+    // --- GRID VIEW (List of Brands) ---
+    else {
+        $brands = get_terms( array(
+            'taxonomy' => 'pwb-brand',
+            'hide_empty' => false,
+        ) );
 
-    $brands = get_terms( array(
-        'taxonomy' => 'pwb-brand',
-        'hide_empty' => false,
-    ) );
+        echo '<div class="mg-catalogue-grid">';
+        if ( empty( $brands ) || is_wp_error( $brands ) ) {
+            echo '<p>No brands found.</p>';
+        } else {
+            foreach ( $brands as $brand ) {
+                $term_id = $brand->term_id;
+                $term_slug = $brand->slug;
+                $brand_name = $brand->name;
 
-    echo '<div class="mg-catalogue-grid">';
-    if ( empty( $brands ) || is_wp_error( $brands ) ) {
-        echo '<p>No brands found.</p>';
-    } else {
-        foreach ( $brands as $brand ) {
-            $term_id = $brand->term_id;
-            $term_slug = $brand->slug;
-            $brand_name = $brand->name;
+                $brand_img_id = get_term_meta( $term_id, 'pwb_brand_image', true );
+                $brand_img_html = $brand_img_id ? wp_get_attachment_image( $brand_img_id, 'medium' ) : '';
 
-            $brand_img_id = get_term_meta( $term_id, 'pwb_brand_image', true );
-            $brand_img_html = $brand_img_id ? wp_get_attachment_image( $brand_img_id, 'medium' ) : '';
+                $catalogue_link = add_query_arg( 'brand', $term_slug, get_permalink() );
 
-            $catalogue_link = add_query_arg( 'brand', $term_slug, get_permalink() );
-
-            echo '<div class="mg-catalogue-card">';
-            echo '<a class="mg-catalogue-link" href="' . esc_url( $catalogue_link ) . '">';
-            if ( $brand_img_html ) {
-                echo '<div class="mg-brand-logo">' . $brand_img_html . '</div>';
-            } else {
-                echo '<div class="mg-brand-logo-placeholder">' . esc_html( $brand_name ) . '</div>';
+                echo '<div class="mg-catalogue-card">';
+                echo '<a class="mg-catalogue-link" href="' . esc_url( $catalogue_link ) . '">';
+                if ( $brand_img_html ) {
+                    echo '<div class="mg-brand-logo">' . $brand_img_html . '</div>';
+                } else {
+                    echo '<div class="mg-brand-logo-placeholder">' . esc_html( $brand_name ) . '</div>';
+                }
+                echo '<div class="mg-brand-name">' . esc_html( $brand_name ) . '</div>';
+                echo '</a>';
+                echo '</div>';
             }
-            echo '<div class="mg-brand-name">' . esc_html( $brand_name ) . '</div>';
-            echo '</a>';
-            echo '</div>';
         }
+        echo '</div>';
     }
-    echo '</div>';
 
     ?>
     <style>
+    /* Grid Styles */
     .mg-catalogue-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px,1fr)); gap:18px; margin:20px 0; }
-    .mg-catalogue-card { border:1px solid #eee; padding:12px; text-align:center; background:#fff; border-radius:8px; box-shadow:0 1px 2px rgba(0,0,0,0.03); }
+    .mg-catalogue-card { border:1px solid #eee; padding:12px; text-align:center; background:#fff; border-radius:8px; box-shadow:0 1px 2px rgba(0,0,0,0.03); transition: transform 0.2s, box-shadow 0.2s; }
+    .mg-catalogue-card:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
     .mg-brand-logo img { max-height:70px; object-fit:contain; display:block; margin:0 auto 8px; }
     .mg-brand-logo-placeholder { padding:24px 6px; font-weight:600; color:#333; }
-    .mg-brand-name { font-size:14px; margin-top:6px; color:#333; }
-    .mg-download-btn { display:inline-block; padding:8px 12px; border:1px solid #ddd; background:#f7f7f7; border-radius:6px; text-decoration:none; color:#333; margin-bottom:12px; }
-    .mg-embed-pdf iframe { min-height:600px; }
+    .mg-brand-name { font-size:14px; margin-top:6px; color:#333; text-decoration: none; }
+    a.mg-catalogue-link { text-decoration: none; }
+    .mg-download-btn { display:inline-block; padding:8px 12px; border:1px solid #ddd; background:#f7f7f7; border-radius:6px; text-decoration:none; color:#333; margin-bottom:12px; font-size: 14px; }
+    .mg-download-btn:hover { background: #eee; }
+
+    /* --- LOADER & IFRAME STYLES (FIXED) --- */
+    .mg-embed-pdf {
+        position: relative;
+        width: 100%;
+        height: 800px; /* Fixed height for PDF area */
+        background: #f0f0f0; /* Grey background while loading */
+        border: 1px solid #e5e5e5;
+        border-radius: 4px;
+        overflow: hidden;
+    }
+
+    /* Iframe starts hidden (opacity 0) to prevent white flash */
+    #mg-pdf-iframe {
+        width: 100%;
+        height: 100%;
+        opacity: 0; 
+        transition: opacity 0.5s ease-in;
+        display: block;
+    }
+
+    /* Loader centered perfectly */
+    .mg-pdf-loader {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background: #ffffff;
+        z-index: 10; /* Sits above iframe initially */
+        transition: opacity 0.5s ease-out, visibility 0.5s;
+    }
+
+    .mg-pdf-loader.hidden {
+        opacity: 0;
+        visibility: hidden;
+        pointer-events: none; /* Clicks pass through to PDF */
+    }
+
+    /* Spinner Animation */
+    .mg-pdf-spinner {
+        position: relative;
+        width: 60px;
+        height: 60px;
+        margin-bottom: 15px;
+    }
+
+    .mg-spinner-ring {
+        position: absolute;
+        top: 0; left: 0; width: 100%; height: 100%;
+        border: 4px solid rgba(209, 29, 39, 0.2); /* Light Red */
+        border-radius: 50%;
+    }
+
+    .mg-spinner-ring-inner {
+        position: absolute;
+        top: 0; left: 0; width: 100%; height: 100%;
+        border: 4px solid transparent;
+        border-top-color: #D11D27; /* Strong Red */
+        border-radius: 50%;
+        animation: mg-spin 1s linear infinite;
+    }
+
+    @keyframes mg-spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+    .mg-loader-text {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        font-size: 14px;
+        font-weight: 500;
+        color: #555;
+    }
     </style>
+
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        var iframe = document.getElementById('mg-pdf-iframe');
+        var loader = document.getElementById('mg-pdf-loader');
+
+        if (!iframe || !loader) return;
+
+        function onPdfLoaded() {
+            // 1. Fade out loader
+            loader.classList.add('hidden');
+            // 2. Fade in iframe
+            iframe.style.opacity = '1';
+        }
+
+        // Native load event
+        iframe.addEventListener('load', onPdfLoaded);
+
+        // Fallback: If load event doesn't fire in 3.5 seconds, force show (for cached PDFs)
+        setTimeout(onPdfLoaded, 3500);
+    });
+    </script>
     <?php
 
     return ob_get_clean();
@@ -922,8 +1034,6 @@ add_action('admin_enqueue_scripts', 'mg_enqueue_admin_uploader');
 
 ////////// End of Brand Catalogue module ////////////
 
-
-
 //remove duplicated show password
 add_action('wp_footer', function() {
   ?>
@@ -946,7 +1056,6 @@ add_action('wp_footer', function() {
   </script>
   <?php
 }, 999);
-
 
 /// remove language selector in the admin login 
 
@@ -1047,7 +1156,6 @@ add_filter( 'register_post_type_args', function( $args, $post_type ) {
     return $args;
 }, 999, 2 );
 
-
 //adding products details to the products 
 add_action( 'woocommerce_single_product_summary', 'show_product_details_acf', 25 );
 
@@ -1062,3 +1170,4 @@ function show_product_details_acf() {
         echo '</div>';
     }
 }
+?>
