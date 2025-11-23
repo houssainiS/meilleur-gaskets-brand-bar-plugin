@@ -1166,7 +1166,6 @@ function show_product_details_acf() {
         echo '<p><strong>OEM:</strong> ' . get_field('oem') . '</p>';
         echo '<p><strong>Désignation:</strong> ' . get_field('designation') . '</p>';
         echo '<p><strong>Compatible:</strong> ' . get_field('compatible') . '</p>';
-        echo '<p><strong>Type Véhicule:</strong> ' . get_field('vehicle_type') . '</p>';
         echo '</div>';
     }
 }
