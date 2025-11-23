@@ -28,6 +28,10 @@ function mg_display_brand_bar() {
     }
 
     echo '<div class="mg-brand-bar-wrapper">';
+    
+    // Left arrow button
+    echo '<button class="mg-brand-arrow mg-brand-arrow-left" id="mgBrandArrowLeft" aria-label="Scroll brands left">&#10094;</button>';
+    
     echo '<div class="mg-brand-bar-scroll" id="mgBrandScroll">';
 
     // Get all brands from Perfect Brands plugin (pwb-brand taxonomy)
@@ -79,6 +83,9 @@ function mg_display_brand_bar() {
     }
 
     echo '</div>'; // .mg-brand-bar-scroll
+    
+    echo '<button class="mg-brand-arrow mg-brand-arrow-right" id="mgBrandArrowRight" aria-label="Scroll brands right">&#10095;</button>';
+    
     echo '</div>'; // .mg-brand-bar-wrapper
 }
 add_action( 'woocommerce_before_main_content', 'mg_display_brand_bar', 5 );
@@ -87,7 +94,9 @@ add_action( 'woocommerce_before_main_content', 'mg_display_brand_bar', 5 );
  * Enqueue styles and drag-to-scroll JavaScript for brand bar
  * Includes:
  * - CSS for brand bar layout and scrolling
+ * - CSS for arrow buttons
  * - JS for mouse drag-to-scroll functionality
+ * - JS for arrow button click scrolling
  * - JS for touch support (mobile)
  * Hooked to: wp_footer
  */
@@ -103,12 +112,13 @@ function mg_brand_bar_styles_scripts() {
         display: none !important;
     }
 
-    /* Brand bar wrapper - handles overflow and spacing */
+    /* Brand bar wrapper - handles overflow and spacing with arrow buttons */
     .mg-brand-bar-wrapper {
-        overflow: hidden;
+        display: flex;
+        align-items: center;
+        gap: 10px;
         margin-bottom: 30px;
         padding-bottom: 10px;
-        cursor: grab;
         user-select: none;
     }
 
@@ -118,7 +128,9 @@ function mg_brand_bar_styles_scripts() {
         flex-wrap: nowrap;
         gap: 15px;
         overflow-x: scroll;
+        overflow-y: hidden;
         scroll-behavior: smooth;
+        flex: 1;
     }
 
     /* Brand logo image sizing */
@@ -137,6 +149,7 @@ function mg_brand_bar_styles_scripts() {
         padding: 5px;
         flex: 0 0 auto;
         transition: transform 0.2s ease;
+        cursor: grab;
     }
 
     .mg-brand-item:hover {
@@ -147,12 +160,71 @@ function mg_brand_bar_styles_scripts() {
     .mg-brand-bar-scroll::-webkit-scrollbar {
         display: none;
     }
+
+    /* Arrow button styling */
+    .mg-brand-arrow {
+        flex-shrink: 0;
+        background-color: #f0f0f0;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        padding: 8px 12px;
+        font-size: 18px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        user-select: none;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 40px;
+        height: 40px;
+    }
+
+    .mg-brand-arrow:hover {
+        background-color: #e0e0e0;
+        border-color: #999;
+    }
+
+    .mg-brand-arrow:active {
+        background-color: #d0d0d0;
+    }
+
+    .mg-brand-arrow:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+        background-color: #f9f9f9;
+    }
     </style>';
 
-    // --- JAVASCRIPT: DRAG-TO-SCROLL & TOUCH SUPPORT ---
+    // --- JAVASCRIPT: DRAG-TO-SCROLL, ARROW BUTTONS & TOUCH SUPPORT ---
     echo '<script>
     document.addEventListener("DOMContentLoaded", function() {
         const slider = document.getElementById("mgBrandScroll");
+        const leftArrow = document.getElementById("mgBrandArrowLeft");
+        const rightArrow = document.getElementById("mgBrandArrowRight");
+        
+        // Scroll amount per arrow click (in pixels)
+        const scrollAmount = 200;
+        
+        leftArrow.addEventListener("click", function() {
+            slider.scrollLeft -= scrollAmount;
+        });
+        
+        rightArrow.addEventListener("click", function() {
+            slider.scrollLeft += scrollAmount;
+        });
+        
+        // Update arrow button disabled state based on scroll position
+        function updateArrowButtonStates() {
+            // Disable left arrow if at the beginning
+            leftArrow.disabled = slider.scrollLeft <= 0;
+            // Disable right arrow if at the end
+            rightArrow.disabled = slider.scrollLeft >= slider.scrollWidth - slider.clientWidth - 10;
+        }
+        
+        // Initialize arrow button states and update on scroll
+        updateArrowButtonStates();
+        slider.addEventListener("scroll", updateArrowButtonStates);
+        window.addEventListener("resize", updateArrowButtonStates);
         
         // --- MOUSE DRAG FUNCTIONALITY ---
         let isDown = false;
