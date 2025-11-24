@@ -514,6 +514,7 @@ function mg_checkbox_styles() {
         cursor: pointer;
         width: 18px;
         height: 18px;
+        accent-color: #D11D27;
     }
 
     .mg-category-item label:hover {
