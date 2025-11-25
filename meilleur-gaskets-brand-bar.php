@@ -1474,4 +1474,139 @@ function show_product_details_acf() {
     }
 }
 
+// =========================================================
+// SECTION 13: CUSTOM ENGLISH TITLE FIELD FOR PRODUCTS (ACF) - IMPROVED
+// =========================================================
+// Uses ACF field "english_title" to show a manual English product title
+// on the English site. If the field is empty, TranslatePress automatic
+// translation is used as a fallback.
+//
+// Improvements vs. previous version:
+// - Handles front-end only (skips admin & REST requests)
+// - More flexible language detection (en, en_US, en_GB...)
+// - Applies to 'the_title', 'get_the_title' and WooCommerce product getters
+// - Works when templates call $product->get_name()
+// =========================================================
+
+
+// ---------------------------------------------------------
+// Helper: return English ACF title for a product ID (or false)
+// ---------------------------------------------------------
+function hous_acf_get_english_title_for_product( $post_id ) {
+    // Ensure ACF function exists
+    if ( ! function_exists( 'get_field' ) ) {
+        return false;
+    }
+
+    // Get ACF field (field name: english_title)
+    $english = get_field( 'english_title', $post_id );
+
+    if ( ! empty( $english ) ) {
+        return (string) $english;
+    }
+
+    return false;
+}
+
+
+// ---------------------------------------------------------
+// Helper: detect if current front-end language is English
+// (tries TranslatePress first, then falls back to locale)
+// ---------------------------------------------------------
+function hous_is_current_language_english() {
+    // If TranslatePress installed, use it
+    if ( function_exists( 'trp_get_current_language' ) ) {
+        $lang = trp_get_current_language();
+        if ( ! empty( $lang ) && strpos( $lang, 'en' ) === 0 ) {
+            return true;
+        }
+    }
+
+    // Fallback: use get_locale()
+    $locale = get_locale();
+    if ( ! empty( $locale ) && strpos( $locale, 'en' ) === 0 ) {
+        return true;
+    }
+
+    return false;
+}
+
+
+// ---------------------------------------------------------
+// CORE: Replace title for front-end product contexts if ACF english_title exists
+// Attached to the_title and get_the_title (covers most WP templates)
+// ---------------------------------------------------------
+add_filter( 'the_title', 'hous_acf_override_product_title_english', 20, 2 );
+add_filter( 'get_the_title', 'hous_acf_override_product_title_english', 20, 2 );
+function hous_acf_override_product_title_english( $title, $post_id ) {
+
+    // Only run on front-end (not admin, not REST)
+    if ( is_admin() || ( defined( 'REST_REQUEST' ) && REST_REQUEST ) ) {
+        return $title;
+    }
+
+    // Require a valid post id
+    $post_id = intval( $post_id );
+    if ( $post_id <= 0 ) {
+        return $title;
+    }
+
+    // Only for products
+    if ( get_post_type( $post_id ) !== 'product' ) {
+        return $title;
+    }
+
+    // Only override when current language is English
+    if ( ! hous_is_current_language_english() ) {
+        return $title;
+    }
+
+    // Get ACF english_title
+    $english_title = hous_acf_get_english_title_for_product( $post_id );
+
+    if ( $english_title !== false ) {
+        return $english_title;
+    }
+
+    // Fallback: return original title (TranslatePress will handle translation)
+    return $title;
+}
+
+
+// ---------------------------------------------------------
+// WooCommerce: Ensure product API/get_name also respects the ACF english title
+// This covers templates and plugins that call $product->get_name()
+// ---------------------------------------------------------
+add_filter( 'woocommerce_product_get_name', 'hous_acf_override_wc_product_name', 10, 2 );
+add_filter( 'woocommerce_product_get_title', 'hous_acf_override_wc_product_name', 10, 2 ); // extra safety
+function hous_acf_override_wc_product_name( $name, $product ) {
+
+    // Only run on front-end (not admin, not REST)
+    if ( is_admin() || ( defined( 'REST_REQUEST' ) && REST_REQUEST ) ) {
+        return $name;
+    }
+
+    // Only run if we have a product object
+    if ( ! is_object( $product ) || ! method_exists( $product, 'get_id' ) ) {
+        return $name;
+    }
+
+    // Only override when current language is English
+    if ( ! hous_is_current_language_english() ) {
+        return $name;
+    }
+
+    $post_id = intval( $product->get_id() );
+    if ( $post_id <= 0 ) {
+        return $name;
+    }
+
+    $english_title = hous_acf_get_english_title_for_product( $post_id );
+    if ( $english_title !== false ) {
+        return $english_title;
+    }
+
+    return $name;
+}
+
 ?>
