@@ -1488,7 +1488,7 @@ add_action( 'woocommerce_single_product_summary', 'show_product_details_acf', 25
 function show_product_details_acf() {
     if( function_exists('get_field') ) {
         echo '<div class="product-details-table">';
-        echo '<p><strong>Référence:</strong> ' . get_field('reference') . '</p>';
+        echo '' . get_field('reference') . '</p>';
         echo '<p><strong>OEM:</strong> ' . get_field('oem') . '</p>';
         echo '<p><strong>Désignation:</strong> ' . get_field('designation') . '</p>';
         echo '<p><strong>Compatible:</strong> ' . get_field('compatible') . '</p>';
