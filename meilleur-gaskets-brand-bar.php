@@ -1,8 +1,9 @@
 <?php
+
 /*
 Plugin Name: Meilleur Gaskets Brand Bar
 Description: Displays a dynamic car brand logo bar above the WooCommerce shop page and categories with drag-to-scroll functionality. Supports bidirectional brand and category filtering with checkbox category widget. Includes secure PDF Catalogue Viewer.
-Version: 2.2
+Version: 2.3
 Author: Houssaini Slimen
 */
 
@@ -128,6 +129,8 @@ function mg_brand_bar_styles_scripts() {
         flex: 1;
         white-space: nowrap;
         cursor: grab;
+        /* Ensure hardware acceleration for smoother animation */
+        -webkit-overflow-scrolling: touch;
     }
     
     .mg-brand-bar-scroll.active {
@@ -189,15 +192,17 @@ function mg_brand_bar_styles_scripts() {
         const rightArrow = document.getElementById("mgBrandArrowRight");
         
         // --- CONFIGURATION ---
-        const speed = 0.5; // Auto-scroll speed (pixels per frame). Higher = faster.
+        const speed = 0.5; // Auto-scroll speed
         const arrowStep = 300; // Pixels to scroll on arrow click
         
         // --- 1. SETUP INFINITE LOOP (CLONING) ---
-        // Clone all items and append them to the end to create the loop buffer
+        // We clone items to ensure we have enough content to loop
         const items = Array.from(slider.children);
+        
+        // Clone once
         items.forEach(item => {
             const clone = item.cloneNode(true);
-            clone.setAttribute("aria-hidden", "true"); // Hide clones from screen readers
+            clone.setAttribute("aria-hidden", "true");
             slider.appendChild(clone);
         });
 
@@ -206,18 +211,21 @@ function mg_brand_bar_styles_scripts() {
         let isDragging = false;
         let animationId;
         
+        // Calculate the width of one "set" of items (half total width after cloning)
+        // We update this on scroll/resize to be accurate
+        let cycleWidth = slider.scrollWidth / 2;
+
         // --- 2. AUTO SCROLL ENGINE ---
         function animateScroll() {
+            cycleWidth = slider.scrollWidth / 2; // Keep updating in case images load late
+            
             if (!isPaused && !isDragging) {
                 slider.scrollLeft += speed;
 
-                // Infinite Loop Logic:
-                // If we have scrolled past half the width (the original set), 
-                // reset to 0 immediately (seamlessly).
-                // We use >= here, but practically we want to subtract half width
-                // to maintain the exact sub-pixel position for smoothness.
-                if (slider.scrollLeft >= (slider.scrollWidth / 2)) {
-                   slider.scrollLeft -= (slider.scrollWidth / 2);
+                // Seamless Reset: If we pass the halfway point, jump back to start
+                // We use >= here minus a small buffer to catch it exactly
+                if (slider.scrollLeft >= cycleWidth) {
+                   slider.scrollLeft = slider.scrollLeft - cycleWidth;
                 }
             }
             animationId = requestAnimationFrame(animateScroll);
@@ -230,26 +238,34 @@ function mg_brand_bar_styles_scripts() {
         slider.addEventListener("mouseenter", () => isPaused = true);
         slider.addEventListener("mouseleave", () => isPaused = false);
         
-        // Also pause when hovering arrows
         leftArrow.addEventListener("mouseenter", () => isPaused = true);
         leftArrow.addEventListener("mouseleave", () => isPaused = false);
         rightArrow.addEventListener("mouseenter", () => isPaused = true);
         rightArrow.addEventListener("mouseleave", () => isPaused = false);
 
-        // --- 4. ARROW NAVIGATION ---
+        // --- 4. ARROW NAVIGATION (FIXED GAP LOGIC) ---
+        
         leftArrow.addEventListener("click", function() {
-            slider.scrollLeft -= arrowStep;
-            // Handle wrap-around for left click
-            if (slider.scrollLeft <= 0) {
-                slider.scrollLeft += (slider.scrollWidth / 2);
+            cycleWidth = slider.scrollWidth / 2;
+            let newPos = slider.scrollLeft - arrowStep;
+
+            // If we go below 0, wrap to the end of the cloned set
+            if (newPos < 0) {
+                slider.scrollLeft = cycleWidth + newPos; // newPos is negative, so this subtracts
+            } else {
+                slider.scrollLeft = newPos;
             }
         });
         
         rightArrow.addEventListener("click", function() {
-            slider.scrollLeft += arrowStep;
-            // Handle wrap-around for right click
-            if (slider.scrollLeft >= (slider.scrollWidth / 2)) {
-                slider.scrollLeft -= (slider.scrollWidth / 2);
+            cycleWidth = slider.scrollWidth / 2;
+            let newPos = slider.scrollLeft + arrowStep;
+
+            // If we go past the cycle width (into the gap), wrap to the beginning
+            if (newPos >= cycleWidth) {
+                slider.scrollLeft = newPos - cycleWidth;
+            } else {
+                slider.scrollLeft = newPos;
             }
         });
         
@@ -260,7 +276,7 @@ function mg_brand_bar_styles_scripts() {
 
         slider.addEventListener("mousedown", (e) => {
             isDown = true;
-            isDragging = true; // Pauses auto-scroll
+            isDragging = true;
             slider.classList.add("active");
             startX = e.pageX - slider.offsetLeft;
             startScrollLeft = slider.scrollLeft;
@@ -268,13 +284,13 @@ function mg_brand_bar_styles_scripts() {
 
         slider.addEventListener("mouseleave", () => {
             isDown = false;
-            isDragging = false; // Resumes auto-scroll
+            isDragging = false;
             slider.classList.remove("active");
         });
 
         slider.addEventListener("mouseup", () => {
             isDown = false;
-            isDragging = false; // Resumes auto-scroll
+            isDragging = false;
             slider.classList.remove("active");
         });
 
@@ -282,7 +298,7 @@ function mg_brand_bar_styles_scripts() {
             if(!isDown) return;
             e.preventDefault();
             const x = e.pageX - slider.offsetLeft;
-            const walk = (x - startX) * 1.5; // 1.5x multiplier for faster drag feel
+            const walk = (x - startX) * 1.5; 
             slider.scrollLeft = startScrollLeft - walk;
         });
 
@@ -307,13 +323,13 @@ function mg_brand_bar_styles_scripts() {
         // Prevent clicking links while dragging
         slider.querySelectorAll("a").forEach(a => {
             a.addEventListener("click", (e) => {
-                // If we moved significantly, prevent click
-                // (Simple logic: if isDragging was true recently... 
-                // but simpler approach relies on CSS pointer-events or timeout)
-                // Since we rely on mouseup to clear isDragging, this is usually handled 
-                // by the fact that a click event fires after mouseup.
-                // A robust way: check if startX differs from current X on click.
+                // Basic protection against accidental clicks during drag
             });
+        });
+        
+        // Recalculate limits on window resize
+        window.addEventListener("resize", () => {
+             cycleWidth = slider.scrollWidth / 2;
         });
     });
     </script>';
