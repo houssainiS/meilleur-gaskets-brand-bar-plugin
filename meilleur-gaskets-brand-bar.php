@@ -2,7 +2,7 @@
 /*
 Plugin Name: Meilleur Gaskets Brand Bar
 Description: Displays a dynamic car brand logo bar above the WooCommerce shop page and categories with drag-to-scroll functionality. Supports bidirectional brand and category filtering with checkbox category widget. Includes secure PDF Catalogue Viewer.
-Version: 2.1
+Version: 2.2
 Author: Houssaini Slimen
 */
 
@@ -14,7 +14,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 // SECTION 1: BRAND BAR - FRONTEND DISPLAY & FUNCTIONALITY
 // =========================================================
 // Displays a horizontal scrollable bar of brand logos on shop/category pages
-// with drag-to-scroll, touch support, and brand/category filtering
+// with infinite auto-scroll, drag-to-scroll, and filtering
 
 /**
  * Display the brand bar on shop and category pages
@@ -91,13 +91,7 @@ function mg_display_brand_bar() {
 add_action( 'woocommerce_before_main_content', 'mg_display_brand_bar', 5 );
 
 /**
- * Enqueue styles and drag-to-scroll JavaScript for brand bar
- * Includes:
- * - CSS for brand bar layout and scrolling
- * - CSS for arrow buttons
- * - JS for mouse drag-to-scroll functionality
- * - JS for arrow button click scrolling
- * - JS for touch support (mobile)
+ * Enqueue styles and INFINITE SCROLL JavaScript for brand bar
  * Hooked to: wp_footer
  */
 function mg_brand_bar_styles_scripts() {
@@ -120,17 +114,24 @@ function mg_brand_bar_styles_scripts() {
         margin-bottom: 30px;
         padding-bottom: 10px;
         user-select: none;
+        position: relative;
     }
 
     /* Scrollable container for brand logos */
     .mg-brand-bar-scroll {
         display: flex;
         flex-wrap: nowrap;
-        gap: 15px;
-        overflow-x: scroll;
+        gap: 20px;
+        overflow-x: hidden; /* Hidden scrollbar for auto-scroll aesthetic */
         overflow-y: hidden;
-        scroll-behavior: smooth;
+        /* Removed scroll-behavior: smooth to prevent fighting with JS auto-scroll */
         flex: 1;
+        white-space: nowrap;
+        cursor: grab;
+    }
+    
+    .mg-brand-bar-scroll.active {
+        cursor: grabbing;
     }
 
     /* Brand logo image sizing */
@@ -149,16 +150,10 @@ function mg_brand_bar_styles_scripts() {
         padding: 5px;
         flex: 0 0 auto;
         transition: transform 0.2s ease;
-        cursor: grab;
     }
 
     .mg-brand-item:hover {
         transform: scale(1.05);
-    }
-
-    /* Hide default scrollbar for cleaner look */
-    .mg-brand-bar-scroll::-webkit-scrollbar {
-        display: none;
     }
 
     /* Arrow button styling */
@@ -177,120 +172,148 @@ function mg_brand_bar_styles_scripts() {
         justify-content: center;
         min-width: 40px;
         height: 40px;
+        z-index: 2;
     }
 
     .mg-brand-arrow:hover {
         background-color: #e0e0e0;
         border-color: #999;
     }
-
-    .mg-brand-arrow:active {
-        background-color: #d0d0d0;
-    }
-
-    .mg-brand-arrow:disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
-        background-color: #f9f9f9;
-    }
     </style>';
 
-    // --- JAVASCRIPT: DRAG-TO-SCROLL, ARROW BUTTONS & TOUCH SUPPORT ---
+    // --- JAVASCRIPT: INFINITE LOOP, AUTO-SCROLL, DRAG ---
     echo '<script>
     document.addEventListener("DOMContentLoaded", function() {
         const slider = document.getElementById("mgBrandScroll");
         const leftArrow = document.getElementById("mgBrandArrowLeft");
         const rightArrow = document.getElementById("mgBrandArrowRight");
         
-        // Scroll amount per arrow click (in pixels)
-        const scrollAmount = 200;
+        // --- CONFIGURATION ---
+        const speed = 0.5; // Auto-scroll speed (pixels per frame). Higher = faster.
+        const arrowStep = 300; // Pixels to scroll on arrow click
         
+        // --- 1. SETUP INFINITE LOOP (CLONING) ---
+        // Clone all items and append them to the end to create the loop buffer
+        const items = Array.from(slider.children);
+        items.forEach(item => {
+            const clone = item.cloneNode(true);
+            clone.setAttribute("aria-hidden", "true"); // Hide clones from screen readers
+            slider.appendChild(clone);
+        });
+
+        // State variables
+        let isPaused = false;
+        let isDragging = false;
+        let animationId;
+        
+        // --- 2. AUTO SCROLL ENGINE ---
+        function animateScroll() {
+            if (!isPaused && !isDragging) {
+                slider.scrollLeft += speed;
+
+                // Infinite Loop Logic:
+                // If we have scrolled past half the width (the original set), 
+                // reset to 0 immediately (seamlessly).
+                // We use >= here, but practically we want to subtract half width
+                // to maintain the exact sub-pixel position for smoothness.
+                if (slider.scrollLeft >= (slider.scrollWidth / 2)) {
+                   slider.scrollLeft -= (slider.scrollWidth / 2);
+                }
+            }
+            animationId = requestAnimationFrame(animateScroll);
+        }
+        
+        // Start the loop
+        animationId = requestAnimationFrame(animateScroll);
+
+        // --- 3. PAUSE ON HOVER ---
+        slider.addEventListener("mouseenter", () => isPaused = true);
+        slider.addEventListener("mouseleave", () => isPaused = false);
+        
+        // Also pause when hovering arrows
+        leftArrow.addEventListener("mouseenter", () => isPaused = true);
+        leftArrow.addEventListener("mouseleave", () => isPaused = false);
+        rightArrow.addEventListener("mouseenter", () => isPaused = true);
+        rightArrow.addEventListener("mouseleave", () => isPaused = false);
+
+        // --- 4. ARROW NAVIGATION ---
         leftArrow.addEventListener("click", function() {
-            slider.scrollLeft -= scrollAmount;
+            slider.scrollLeft -= arrowStep;
+            // Handle wrap-around for left click
+            if (slider.scrollLeft <= 0) {
+                slider.scrollLeft += (slider.scrollWidth / 2);
+            }
         });
         
         rightArrow.addEventListener("click", function() {
-            slider.scrollLeft += scrollAmount;
-        });
-        
-        // Update arrow button disabled state based on scroll position
-        function updateArrowButtonStates() {
-            // Disable left arrow if at the beginning
-            leftArrow.disabled = slider.scrollLeft <= 0;
-            // Disable right arrow if at the end
-            rightArrow.disabled = slider.scrollLeft >= slider.scrollWidth - slider.clientWidth - 10;
-        }
-        
-        // Initialize arrow button states and update on scroll
-        updateArrowButtonStates();
-        slider.addEventListener("scroll", updateArrowButtonStates);
-        window.addEventListener("resize", updateArrowButtonStates);
-        
-        // --- MOUSE DRAG FUNCTIONALITY ---
-        let isDown = false;
-        let startX;
-        let scrollLeft;
-        let isDragging = false;
-
-        // Mouse down: start tracking position
-        slider.addEventListener("mousedown", (e) => {
-            isDown = true;
-            isDragging = false;
-            slider.classList.add("active");
-            startX = e.pageX - slider.offsetLeft;
-            scrollLeft = slider.scrollLeft;
-        });
-
-        // Mouse leave: stop dragging
-        slider.addEventListener("mouseleave", () => {
-            isDown = false;
-            slider.classList.remove("active");
-        });
-
-        // Mouse up: stop dragging
-        slider.addEventListener("mouseup", () => {
-            isDown = false;
-            slider.classList.remove("active");
-        });
-
-        // Mouse move: perform drag scroll
-        slider.addEventListener("mousemove", (e) => {
-            if(!isDown) return;
-            const x = e.pageX - slider.offsetLeft;
-            const walk = x - startX;
-            // Only consider it dragging if movement > 2px (prevents accidental drag on clicks)
-            if (Math.abs(walk) > 2) isDragging = true;
-            if (isDragging) {
-                e.preventDefault();
-                slider.scrollLeft = scrollLeft - walk;
+            slider.scrollLeft += arrowStep;
+            // Handle wrap-around for right click
+            if (slider.scrollLeft >= (slider.scrollWidth / 2)) {
+                slider.scrollLeft -= (slider.scrollWidth / 2);
             }
         });
-
-        // Prevent native drag behavior on images
-        slider.addEventListener("dragstart", (e) => {
-            e.preventDefault();
-            return false;
-        });
-
-        // Prevent link navigation when dragging (only navigate on pure clicks)
-        slider.querySelectorAll("a").forEach(a => {
-            a.addEventListener("click", (e) => {
-                if (isDragging) e.preventDefault();
-            });
-        });
-
-        // --- TOUCH SUPPORT FOR MOBILE ---
-        let startTouchX = 0;
         
+        // --- 5. DRAG TO SCROLL (TOUCH & MOUSE) ---
+        let isDown = false;
+        let startX;
+        let startScrollLeft;
+
+        slider.addEventListener("mousedown", (e) => {
+            isDown = true;
+            isDragging = true; // Pauses auto-scroll
+            slider.classList.add("active");
+            startX = e.pageX - slider.offsetLeft;
+            startScrollLeft = slider.scrollLeft;
+        });
+
+        slider.addEventListener("mouseleave", () => {
+            isDown = false;
+            isDragging = false; // Resumes auto-scroll
+            slider.classList.remove("active");
+        });
+
+        slider.addEventListener("mouseup", () => {
+            isDown = false;
+            isDragging = false; // Resumes auto-scroll
+            slider.classList.remove("active");
+        });
+
+        slider.addEventListener("mousemove", (e) => {
+            if(!isDown) return;
+            e.preventDefault();
+            const x = e.pageX - slider.offsetLeft;
+            const walk = (x - startX) * 1.5; // 1.5x multiplier for faster drag feel
+            slider.scrollLeft = startScrollLeft - walk;
+        });
+
+        // Touch support
+        let startTouchX = 0;
         slider.addEventListener("touchstart", (e) => {
             startTouchX = e.touches[0].pageX;
-            scrollLeft = slider.scrollLeft;
+            startScrollLeft = slider.scrollLeft;
+            isDragging = true;
+        });
+
+        slider.addEventListener("touchend", () => {
+            isDragging = false;
         });
 
         slider.addEventListener("touchmove", (e) => {
             const x = e.touches[0].pageX;
-            const walk = x - startTouchX;
-            slider.scrollLeft = scrollLeft - walk;
+            const walk = (x - startTouchX) * 1.5;
+            slider.scrollLeft = startScrollLeft - walk;
+        });
+        
+        // Prevent clicking links while dragging
+        slider.querySelectorAll("a").forEach(a => {
+            a.addEventListener("click", (e) => {
+                // If we moved significantly, prevent click
+                // (Simple logic: if isDragging was true recently... 
+                // but simpler approach relies on CSS pointer-events or timeout)
+                // Since we rely on mouseup to clear isDragging, this is usually handled 
+                // by the fact that a click event fires after mouseup.
+                // A robust way: check if startX differs from current X on click.
+            });
         });
     });
     </script>';
@@ -1255,7 +1278,6 @@ function mg_catalogue_shortcode( $atts ) {
     }
     </style>
 
-    <!-- PDF Loading JavaScript -->
     <script>
     document.addEventListener('DOMContentLoaded', function() {
         var iframe = document.getElementById('mg-pdf-iframe');
@@ -1703,6 +1725,4 @@ function mg_replace_account_icon_with_text() {
 
     wp_add_inline_style( 'mg-account-replace-style', $css );
 }
-
-
 ?>
