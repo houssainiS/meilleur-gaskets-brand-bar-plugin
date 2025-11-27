@@ -1725,4 +1725,65 @@ function mg_replace_account_icon_with_text() {
 
     wp_add_inline_style( 'mg-account-replace-style', $css );
 }
+
+// =========================================================
+// SECTION 15: ADVANCED SEARCH (OEM & REFERENCE)
+// =========================================================
+// Extends default WordPress search to include custom fields:
+// 'oem' and 'reference'. Supports partial matches (e.g., "AB" finds "12345-AB").
+
+/**
+ * Join the Post Meta table to the search query.
+ * This allows us to look at the custom fields (ACF data) during search.
+ */
+add_filter('posts_join', 'mg_search_join_meta');
+function mg_search_join_meta( $join ) {
+    if ( is_search() && ! is_admin() ) {
+        global $wpdb;
+        // Connect the meta table to the products table
+        $join .= " LEFT JOIN {$wpdb->postmeta} ON {$wpdb->posts}.ID = {$wpdb->postmeta}.post_id ";
+    }
+    return $join;
+}
+
+/**
+ * Modify the "WHERE" clause to check OEM and Reference.
+ * It uses the Logic: (Title Match) OR (OEM Match) OR (Reference Match)
+ */
+add_filter('posts_where', 'mg_search_where_meta');
+function mg_search_where_meta( $where ) {
+    if ( is_search() && ! is_admin() ) {
+        global $wpdb;
+        
+        // Get the search keyword (e.g., "AB")
+        $term = get_query_var( 's' );
+        if ( empty( $term ) ) return $where;
+
+        // Escape the term for security and wrap in % for partial matching
+        // %term% means: anything before + term + anything after
+        $like = '%' . $wpdb->esc_like( $term ) . '%';
+
+        // We use Regex to insert our condition right after the Title check.
+        // This effectively says: If Title matches OR if Meta (OEM/Ref) matches.
+        $where = preg_replace(
+            "/\(\s*{$wpdb->posts}.post_title\s+LIKE\s*(\'[^\']+\')\s*\)/",
+            "({$wpdb->posts}.post_title LIKE $1) OR ( ({$wpdb->postmeta}.meta_key = 'oem' OR {$wpdb->postmeta}.meta_key = 'reference') AND {$wpdb->postmeta}.meta_value LIKE '$like' )",
+            $where
+        );
+    }
+    return $where;
+}
+
+/**
+ * Prevent duplicate results.
+ * Because a product might match both Title AND OEM, we ensure it only shows up once.
+ */
+add_filter('posts_distinct', 'mg_search_distinct');
+function mg_search_distinct( $where ) {
+    if ( is_search() && ! is_admin() ) {
+        return "DISTINCT";
+    }
+    return $where;
+}
+
 ?>
