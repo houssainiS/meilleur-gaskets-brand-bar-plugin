@@ -1609,4 +1609,100 @@ function hous_acf_override_wc_product_name( $name, $product ) {
     return $name;
 }
 
+
+// =========================================
+// Section 14 : Replace Woostify Account Icon with "Login" for Logged-Out Users
+// =========================================
+
+add_action( 'wp_enqueue_scripts', 'mg_replace_account_icon_with_text' );
+function mg_replace_account_icon_with_text() {
+
+    if ( is_admin() ) return;
+
+    // Register an empty script to attach inline JS
+    wp_register_script( 'mg-account-replace', false );
+    wp_enqueue_script( 'mg-account-replace' );
+
+    $login_url = esc_url( wc_get_page_permalink( 'myaccount' ) );
+
+    // Inline JS
+    $js = "
+    document.addEventListener('DOMContentLoaded', function() {
+        try {
+            if (document.body.classList.contains('logged-in')) {
+                return; // Do nothing if logged-in → keep default icon
+            }
+
+            // Woostify selectors
+            var acct = document.querySelector('.tools-icon.my-account > a.my-account-icon')
+                    || document.querySelector('.tools-icon.my-account a')
+                    || document.querySelector('.my-account-icon')
+                    || document.querySelector('.tools-icon.my-account');
+
+            if (!acct) return;
+
+            var href = acct.getAttribute('href') ? acct.getAttribute('href') : '" . $login_url . "';
+
+            // New anchor
+            var newA = document.createElement('a');
+            newA.setAttribute('href', href);
+            newA.className = 'tools-icon my-account-icon mg-my-account-text';
+            newA.setAttribute('aria-label', 'Login');
+
+            var span = document.createElement('span');
+            span.className = 'mg-my-account-text-span';
+            span.textContent = 'Login';
+
+            newA.appendChild(span);
+
+            if (acct.tagName.toLowerCase() === 'a') {
+                acct.parentNode.replaceChild(newA, acct);
+            } else {
+                var existingAnchor = acct.querySelector('a');
+                if (existingAnchor) {
+                    existingAnchor.parentNode.replaceChild(newA, existingAnchor);
+                } else {
+                    acct.insertBefore(newA, acct.firstChild);
+                }
+            }
+        } catch (e) { console.log('mg account replace error', e); }
+    });
+    ";
+
+    wp_add_inline_script( 'mg-account-replace', $js );
+
+    // CSS
+    wp_register_style( 'mg-account-replace-style', false );
+    wp_enqueue_style( 'mg-account-replace-style' );
+
+    $css = "
+    /* Only hide the icon when logged-out (safe fix) */
+    body:not(.logged-in) .tools-icon.my-account .woostify-svg-icon,
+    body:not(.logged-in) .tools-icon.my-account svg {
+        display: none !important;
+    }
+
+    /* Style login text */
+    .mg-my-account-text {
+        text-decoration: none;
+        display: inline-flex;
+        align-items: center;
+    }
+
+    .mg-my-account-text-span {
+        font-size: 15px;
+        color: #2b2b2b;
+        line-height: 1;
+    }
+
+    /* Hover color */
+    .mg-my-account-text:hover .mg-my-account-text-span {
+        color: #D11D27 !important;
+    }
+    ";
+
+    wp_add_inline_style( 'mg-account-replace-style', $css );
+}
+
+
 ?>
