@@ -1504,7 +1504,7 @@ add_action( 'woocommerce_single_product_summary', 'show_product_details_acf', 25
 function show_product_details_acf() {
     if( function_exists('get_field') ) {
         echo '<div class="product-details-table">';
-        echo '' . get_field('reference') . '</p>';
+        echo '<p><strong>Référence:</strong> ' . get_field('reference') . '</p>';
         echo '<p><strong>OEM:</strong> ' . get_field('oem') . '</p>';
         echo '<p><strong>Désignation:</strong> ' . get_field('designation') . '</p>';
         echo '<p><strong>Compatible:</strong> ' . get_field('compatible') . '</p>';
@@ -1801,5 +1801,64 @@ function mg_search_distinct( $where ) {
     }
     return $where;
 }
+
+// =========================================================
+// SECTION 16: DISPLAY REFERENCE IN SHOP LOOP
+// =========================================================
+// Adds the 'reference' ACF field right after the product title on shop/category pages.
+
+/**
+ * Display the product reference (ACF field) on the shop page after the title.
+ * Hooked to: woocommerce_after_shop_loop_item_title
+ */
+function mg_display_product_reference_in_loop() {
+    global $product;
+    
+    // Check if ACF is active and we have a product
+    if ( ! function_exists('get_field') || ! $product ) {
+        return;
+    }
+    
+    $product_id = $product->get_id();
+    $reference = get_field('reference', $product_id);
+    
+    if ( $reference ) {
+        // Output the reference number with a label
+        echo '<span class="mg-product-reference">- ' . esc_html($reference) . '</span>';
+    }
+}
+// Hook to display the reference right after the title in the loop (priority 15 is below the default title priority)
+add_action( 'woocommerce_after_shop_loop_item_title', 'mg_display_product_reference_in_loop', 15 );
+
+/**
+ * Add CSS for the product reference display in the shop loop.
+ * Hooked to: wp_head
+ */
+function mg_style_product_reference() {
+    // Only apply CSS on relevant archive pages
+    if ( ! is_shop() && ! is_product_category() && ! is_product_taxonomy() && ! is_search() ) {
+        return;
+    }
+
+    echo '<style>
+        .mg-product-reference {
+            display: block; /* Forces it onto a new line */
+            font-size: 14px;
+            font-weight: 500;
+            color: #8f8f8f; /* Matches the brand color for clarity */
+            margin-top: 5px;
+            line-height: 1.2;
+            word-break: break-all;
+        }
+        
+        /* Ensure title spacing is tight above the reference */
+        .woocommerce ul.products li.product .woocommerce-loop-product__title {
+            margin-bottom: 0 !important; 
+        }
+    </style>';
+}
+add_action( 'wp_head', 'mg_style_product_reference' );
+
+
 
 ?>
