@@ -1859,6 +1859,87 @@ function mg_style_product_reference() {
 }
 add_action( 'wp_head', 'mg_style_product_reference' );
 
+// =========================================================
+// SECTION 17: CATEGORY ENGLISH TITLE OVERRIDE (TRANSLATION FIX)
+// =========================================================
+// Overrides the WooCommerce Product Category name with a manual ACF field
+// when the current language is detected as English.
 
+/**
+ * Helper function to get the ACF English category title from the term meta.
+ * @param int $term_id The ID of the term.
+ * @return string|false The English title or false if not set/ACF not available.
+ */
+function mg_acf_get_english_category_title( $term_id ) {
+    if ( ! function_exists( 'get_field' ) ) {
+        return false;
+    }
+    // We target the taxonomy term using the format 'taxonomy_slug_TERM_ID'
+    // This assumes the ACF field is named 'english_category_title'
+    $english = get_field( 'english_category_title', 'product_cat_' . $term_id );
+    return ( ! empty( $english ) ) ? (string) $english : false;
+}
+
+/**
+ * Filter to override the category name field (used by widgets and loops).
+ * This ensures the name displayed is the ACF title when viewing the English version.
+ * Hooked to: get_term_field
+ */
+add_filter( 'get_term_field', 'mg_override_category_title_english', 20, 3 );
+function mg_override_category_title_english( $value, $field, $term ) {
+
+    // Only apply if we are asking for the 'name' field
+    if ( $field !== 'name' ) {
+        return $value;
+    }
+
+    // Only run on front-end and when language is English (uses helper from Section 13)
+    // hous_is_current_language_english is assumed to exist from Section 13
+    if ( is_admin() || ! function_exists('hous_is_current_language_english') || ! hous_is_current_language_english() ) {
+        return $value;
+    }
+
+    // Ensure we have a term object or ID
+    $term_id = ( is_object( $term ) && isset( $term->term_id ) ) ? $term->term_id : intval( $term );
+    
+    // Attempt to get the English ACF title
+    $english_title = mg_acf_get_english_category_title( $term_id );
+
+    if ( $english_title !== false ) {
+        // If the ACF field is set, override the name
+        return $english_title;
+    }
+
+    // Fallback: return original value (TranslatePress will translate if ACF is empty)
+    return $value;
+}
+
+/**
+ * Filter to override the category name when the full term object is fetched.
+ * This is crucial for fixing the title on actual category archive pages (e.g., when is_product_category() is true).
+ * Hooked to: get_term
+ */
+add_filter( 'get_term', 'mg_override_full_category_term_english', 20, 2 );
+function mg_override_full_category_term_english( $term, $taxonomy ) {
+    
+    // Only for product categories
+    if ( ! is_object( $term ) || $term->taxonomy !== 'product_cat' ) {
+        return $term;
+    }
+
+    // Only run on front-end and when language is English (uses helper from Section 13)
+    if ( is_admin() || ! function_exists('hous_is_current_language_english') || ! hous_is_current_language_english() ) {
+        return $term;
+    }
+
+    $english_title = mg_acf_get_english_category_title( $term->term_id );
+
+    if ( $english_title !== false ) {
+        // Override the name property of the term object
+        $term->name = $english_title;
+    }
+
+    return $term;
+}
 
 ?>
