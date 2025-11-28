@@ -29,12 +29,11 @@ function mg_display_brand_bar() {
     }
 
     echo '<div class="mg-brand-bar-wrapper">';
+        // Left arrow button
+        echo '<button class="mg-brand-arrow mg-brand-arrow-left" id="mgBrandArrowLeft" aria-label="Scroll brands left">&#10094;</button>';
+        
+        echo '<div class="mg-brand-bar-scroll" id="mgBrandScroll">';
     
-    // Left arrow button
-    echo '<button class="mg-brand-arrow mg-brand-arrow-left" id="mgBrandArrowLeft" aria-label="Scroll brands left">&#10094;</button>';
-    
-    echo '<div class="mg-brand-bar-scroll" id="mgBrandScroll">';
-
     // Get all brands from Perfect Brands plugin (pwb-brand taxonomy)
     $brands = get_terms( array(
         'taxonomy' => 'pwb-brand',
@@ -133,8 +132,8 @@ function mg_brand_bar_styles_scripts() {
         /* Ensure hardware acceleration for smoother animation */
         -webkit-overflow-scrolling: touch;
         /* FIX: Prevent text selection/link dragging on different browsers */
-        user-select: none; 
-        -webkit-user-select: none; 
+        user-select: none;
+        -webkit-user-select: none;
         -moz-user-select: none;
     }
     
@@ -147,7 +146,7 @@ function mg_brand_bar_styles_scripts() {
         max-height: 60px;
         object-fit: contain;
         display: block;
-        -webkit-user-drag: none; 
+        -webkit-user-drag: none;
         user-drag: none;
         pointer-events: none; /* Already prevents image click/drag */
     }
@@ -201,8 +200,10 @@ function mg_brand_bar_styles_scripts() {
         const arrowStep = 300; // Pixels to scroll on arrow click
         
         // --- 1. SETUP INFINITE LOOP (CLONING) ---
-        // We clone items to ensure we have enough content to loop
         const items = Array.from(slider.children);
+        
+        // <CHANGE> Calculate original width BEFORE cloning
+        let cycleWidth = slider.scrollWidth;
         
         // Clone once
         items.forEach(item => {
@@ -215,22 +216,14 @@ function mg_brand_bar_styles_scripts() {
         let isPaused = false;
         let isDragging = false;
         let animationId;
-        
-        // Calculate the width of one "set" of items (half total width after cloning)
-        // We update this on scroll/resize to be accurate
-        let cycleWidth = slider.scrollWidth / 2;
 
         // --- 2. AUTO SCROLL ENGINE ---
         function animateScroll() {
-            cycleWidth = slider.scrollWidth / 2; // Keep updating in case images load late
-            
             if (!isPaused && !isDragging) {
                 slider.scrollLeft += speed;
-
                 // Seamless Reset: If we pass the halfway point, jump back to start
-                // We use >= here minus a small buffer to catch it exactly
                 if (slider.scrollLeft >= cycleWidth) {
-                   slider.scrollLeft = slider.scrollLeft - cycleWidth;
+                   slider.scrollLeft -= cycleWidth;
                 }
             }
             animationId = requestAnimationFrame(animateScroll);
@@ -248,32 +241,32 @@ function mg_brand_bar_styles_scripts() {
         rightArrow.addEventListener("mouseenter", () => isPaused = true);
         rightArrow.addEventListener("mouseleave", () => isPaused = false);
 
-        // --- 4. ARROW NAVIGATION (FIXED GAP LOGIC) ---
+        // --- 4. ARROW NAVIGATION (FIXED) ---
         
-        leftArrow.addEventListener("click", function() {
-            cycleWidth = slider.scrollWidth / 2;
-            let newPos = slider.scrollLeft - arrowStep;
-
-            // If we go below 0, wrap to the end of the cloned set
-            if (newPos < 0) {
-                slider.scrollLeft = cycleWidth + newPos; // newPos is negative, so this subtracts
-            } else {
-                slider.scrollLeft = newPos;
-            }
-        });
-        
+        // Right Arrow: Scrolls forward with seamless wrapping
         rightArrow.addEventListener("click", function() {
-            cycleWidth = slider.scrollWidth / 2;
             let newPos = slider.scrollLeft + arrowStep;
-
-            // If we go past the cycle width (into the gap), wrap to the beginning
+            
+            // <CHANGE> Wrap seamlessly when reaching cycle boundary
             if (newPos >= cycleWidth) {
-                slider.scrollLeft = newPos - cycleWidth;
-            } else {
-                slider.scrollLeft = newPos;
+                newPos = newPos % cycleWidth;
             }
+            
+            slider.scrollLeft = newPos;
         });
         
+        // Left Arrow: Scrolls backward with seamless wrapping
+        leftArrow.addEventListener("click", function() {
+            let newPos = slider.scrollLeft - arrowStep;
+            
+            // <CHANGE> Wrap seamlessly when going below zero
+            if (newPos < 0) {
+                newPos = cycleWidth + (newPos % cycleWidth);
+            }
+            
+            slider.scrollLeft = newPos;
+        });
+
         // --- 5. DRAG TO SCROLL (TOUCH & MOUSE) ---
         let isDown = false;
         let startX;
@@ -303,7 +296,7 @@ function mg_brand_bar_styles_scripts() {
             if(!isDown) return;
             e.preventDefault();
             const x = e.pageX - slider.offsetLeft;
-            const walk = (x - startX) * 1.5; 
+            const walk = (x - startX) * 1.5;
             slider.scrollLeft = startScrollLeft - walk;
         });
 
@@ -328,17 +321,11 @@ function mg_brand_bar_styles_scripts() {
         // Prevent clicking links while dragging
         slider.querySelectorAll("a").forEach(a => {
             a.addEventListener("click", (e) => {
-                // Check if the user was dragging (moved more than a few pixels)
                 if (isDragging) {
                     e.preventDefault();
                     e.stopPropagation();
                 }
             });
-        });
-        
-        // Recalculate limits on window resize
-        window.addEventListener("resize", () => {
-             cycleWidth = slider.scrollWidth / 2;
         });
     });
     </script>';
