@@ -73,8 +73,10 @@ function mg_display_brand_bar() {
             $brand_img = $brand_img_id ? wp_get_attachment_image( $brand_img_id, 'medium' ) : '';
 
             // Output brand item with logo or fallback to brand name
-            echo '<a class="mg-brand-item" href="'. esc_url( $brand_link ) .'">';
+            // FIX: Added draggable="false" to the anchor tag
+            echo '<a class="mg-brand-item" draggable="false" href="'. esc_url( $brand_link ) .'">';
             if ( $brand_img ) {
+                // The image itself already has draggable="false" added below
                 echo str_replace( '<img', '<img draggable="false"', $brand_img );
             } else {
                 echo esc_html( $brand->name );
@@ -125,12 +127,15 @@ function mg_brand_bar_styles_scripts() {
         gap: 20px;
         overflow-x: hidden; /* Hidden scrollbar for auto-scroll aesthetic */
         overflow-y: hidden;
-        /* Removed scroll-behavior: smooth to prevent fighting with JS auto-scroll */
         flex: 1;
         white-space: nowrap;
         cursor: grab;
         /* Ensure hardware acceleration for smoother animation */
         -webkit-overflow-scrolling: touch;
+        /* FIX: Prevent text selection/link dragging on different browsers */
+        user-select: none; 
+        -webkit-user-select: none; 
+        -moz-user-select: none;
     }
     
     .mg-brand-bar-scroll.active {
@@ -144,7 +149,7 @@ function mg_brand_bar_styles_scripts() {
         display: block;
         -webkit-user-drag: none; 
         user-drag: none;
-        pointer-events: none;
+        pointer-events: none; /* Already prevents image click/drag */
     }
 
     /* Brand item link styling */
@@ -323,7 +328,11 @@ function mg_brand_bar_styles_scripts() {
         // Prevent clicking links while dragging
         slider.querySelectorAll("a").forEach(a => {
             a.addEventListener("click", (e) => {
-                // Basic protection against accidental clicks during drag
+                // Check if the user was dragging (moved more than a few pixels)
+                if (isDragging) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                }
             });
         });
         
@@ -335,7 +344,6 @@ function mg_brand_bar_styles_scripts() {
     </script>';
 }
 add_action( 'wp_footer', 'mg_brand_bar_styles_scripts' );
-
 
 // =========================================================
 // SECTION 2: CATEGORY CHECKBOX WIDGET & FILTERING
