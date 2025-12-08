@@ -1532,7 +1532,6 @@ add_filter( 'register_post_type_args', function( $args, $post_type ) {
     return $args;
 }, 999, 2 );
 
-
 // =========================================================
 // SECTION 12: PRODUCT DETAILS DISPLAY
 // =========================================================
@@ -1540,18 +1539,46 @@ add_filter( 'register_post_type_args', function( $args, $post_type ) {
 
 /**
  * Display product details from ACF fields
- * Shows: Reference, OEM, Designation, Compatible
+ * Shows: Reference, OEM, Designation (translated via ACF), Compatible, Type Véhicule
  * Hooked to: woocommerce_single_product_summary at priority 25
  */
 add_action( 'woocommerce_single_product_summary', 'show_product_details_acf', 25 );
 
 function show_product_details_acf() {
-    if( function_exists('get_field') ) {
+    
+    // Ensure both ACF and the language detection function exist
+    if( function_exists('get_field') && function_exists('hous_is_current_language_english') ) {
+        
+        $is_english = hous_is_current_language_english();
+        
+        // --- 1. Designation Logic ---
+        if ( $is_english ) {
+            $designation_label = 'Designation:';
+            $designation_value = get_field('designation_in_english');
+            
+            // Fallback: Use the original designation if the English ACF field is empty
+            if ( empty( $designation_value ) ) {
+                $designation_value = get_field('designation');
+            }
+        } else {
+            $designation_label = 'Désignation:';
+            $designation_value = get_field('designation');
+        }
+
+        // --- 2. Start Display ---
         echo '<div class="product-details-table">';
+        
+        // Reference and OEM (labels will be handled by TranslatePress string translation)
         echo '<p><strong>Référence:</strong> ' . get_field('reference') . '</p>';
         echo '<p><strong>OEM:</strong> ' . get_field('oem') . '</p>';
-        echo '<p><strong>Désignation:</strong> ' . get_field('designation') . '</p>';
+        
+        // Designation (value is custom handled by ACF)
+        echo '<p><strong>' . $designation_label . '</strong> ' . $designation_value . '</p>';
+        
+        // Compatible and Type Véhicule (value will be from the original ACF field)
         echo '<p><strong>Compatible:</strong> ' . get_field('compatible') . '</p>';
+        echo '<p><strong>Type Véhicule:</strong> ' . get_field('type_veicule') . '</p>';
+        
         echo '</div>';
     }
 }
