@@ -563,41 +563,90 @@ add_action( 'wp_footer', 'mg_checkbox_styles' );
 // SECTION 3: WOOCOMMERCE PRICE HIDING & DISPLAY MODIFICATIONS
 // =========================================================
 // Global settings to hide prices throughout the store and disable payments
-// Allows the store to function as a catalog-only system
+// UPDATED: Prices are VISIBLE on Single Product main listing, but HIDDEN in Related Products.
 
 /**
- * Ensure products always have a price value for sorting
- * Returns 0 if price is not set (prevents product ordering errors)
+ * Control the numeric price value for sorting and logic.
+ * Returns the actual price if on a Single Product Page or Admin.
+ * Returns 0 everywhere else (Shop, Archives) to prevent sorting/logic exposure.
  * Hooked to: woocommerce_product_get_price and woocommerce_product_get_regular_price
  */
-add_filter('woocommerce_product_get_price', function($price, $product) {
-    return $price ?: 0;
-}, 10, 2);
+function mg_conditional_price_value( $price, $product ) {
+    // Always return real price in Admin dashboard
+    if ( is_admin() ) {
+        return $price;
+    }
 
-add_filter('woocommerce_product_get_regular_price', function($price, $product) {
-    return $price ?: 0;
-}, 10, 2);
+    // Return real price on the Single Product Page (for main and related items)
+    // We handle the visual hiding of related items in the HTML filter below.
+    if ( is_product() ) {
+        return $price;
+    }
+
+    // Default: Return 0 for Shop, Categories, Search, etc.
+    return 0;
+}
+add_filter( 'woocommerce_product_get_price', 'mg_conditional_price_value', 10, 2 );
+add_filter( 'woocommerce_product_get_regular_price', 'mg_conditional_price_value', 10, 2 );
 
 /**
- * Hide all price text output everywhere in the store
- * Hooked to: woocommerce_get_price_html, woocommerce_cart_item_price, woocommerce_cart_item_subtotal
+ * Control the visual HTML output of the price (e.g., "$100.00").
+ * Returns the price HTML ONLY for the Main Product on the Single Product Page.
+ * Hides price for Related Products, Upsells, and other pages (Shop/Category).
+ * Hooked to: woocommerce_get_price_html
  */
-add_filter('woocommerce_get_price_html', '__return_empty_string');
-add_filter('woocommerce_cart_item_price', '__return_empty_string');
-add_filter('woocommerce_cart_item_subtotal', '__return_empty_string');
+function mg_conditional_price_html( $price_html, $product ) {
+    // Always show price HTML in Admin dashboard
+    if ( is_admin() ) {
+        return $price_html;
+    }
+
+    // Logic for Single Product Page
+    if ( is_product() ) {
+        // Get the ID of the main product being viewed
+        $main_product_id = get_queried_object_id();
+        $current_product_id = $product->get_id();
+
+        // 1. If this is the Main Product, show the price
+        if ( $current_product_id === $main_product_id ) {
+            return $price_html;
+        }
+
+        // 2. If this is a Variation of the Main Product, show the price
+        if ( $product->is_type('variation') && $product->get_parent_id() === $main_product_id ) {
+            return $price_html;
+        }
+
+        // 3. Otherwise (Related Products, Cross-sells, Upsells), hide the price
+        return '';
+    }
+
+    // Default: Return empty string to hide price text on Shop, Categories, Search, etc.
+    return '';
+}
+add_filter( 'woocommerce_get_price_html', 'mg_conditional_price_html', 10, 2 );
 
 /**
- * Disable payment processing and coupon functionality
+ * Hide prices specifically in the Cart items.
+ * Even if a product has a price, we hide it in the cart summary line items.
+ * Hooked to: woocommerce_cart_item_price, woocommerce_cart_item_subtotal
+ */
+add_filter( 'woocommerce_cart_item_price', '__return_empty_string' );
+add_filter( 'woocommerce_cart_item_subtotal', '__return_empty_string' );
+
+/**
+ * Disable payment processing and coupon functionality.
+ * Ensures the site functions as a catalog/quote system rather than a direct store.
  * Hooked to: woocommerce_cart_needs_payment and woocommerce_coupons_enabled
  */
-add_filter('woocommerce_cart_needs_payment', '__return_false');
-add_filter('woocommerce_coupons_enabled', '__return_false');
+add_filter( 'woocommerce_cart_needs_payment', '__return_false' );
+add_filter( 'woocommerce_coupons_enabled', '__return_false' );
 
 /**
- * Hide cart totals
+ * Hide the total cost at the bottom of the cart.
  * Hooked to: woocommerce_cart_total
  */
-add_filter('woocommerce_cart_total', function($value) {
+add_filter( 'woocommerce_cart_total', function($value) {
     return '';
 });
 
