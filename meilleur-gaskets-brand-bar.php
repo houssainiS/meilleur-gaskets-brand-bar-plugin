@@ -1986,4 +1986,92 @@ function mg_override_full_category_term_english( $term, $taxonomy ) {
     return $term;
 }
 
+// =========================================================
+// SECTION 18: WOOCOMMERCE ADMIN PRODUCTS SEARCH ENHANCEMENT (FINAL FIX)
+// =========================================================
+// Fixes 'Serialization of Closure' error by replacing $query->set() with standard filters.
+// Uses the confirmed keys ('reference', 'oem') and a high-priority filter.
+
+/**
+ * Global variable to temporarily hold the search term for the WHERE clause function.
+ */
+global $mg_admin_search_term;
+
+/**
+ * STEP 1: Intercepts the query early to set up the necessary data and remove the default WC filter.
+ * Hooked to: pre_get_posts (priority 99 to run last)
+ */
+function mg_admin_product_search_acf_meta_setup( $query ) {
+    global $mg_admin_search_term;
+
+    // 1. Check for necessary conditions: Admin, Main Query, Product Post Type, Search active.
+    if ( ! is_admin() || 
+         ! $query->is_main_query() || 
+         $query->get( 'post_type' ) !== 'product' || 
+         ! isset( $_GET['s'] ) || 
+         empty( $_GET['s'] ) 
+    ) {
+        return;
+    }
+    
+    // Get search term and sanitize it
+    $mg_admin_search_term = sanitize_text_field( $_GET['s'] );
+    
+    // 2. Temporarily remove the default WooCommerce search filter to prevent conflict.
+    remove_filter( 'posts_search', 'wc_products_admin_search' ); 
+    
+    // 3. Add our named filter function to modify the WHERE clause.
+    // Use a high priority (99) to ensure it runs late.
+    add_filter( 'posts_where', 'mg_admin_product_search_acf_meta_where', 99, 1 );
+
+    // 4. Re-add the WooCommerce search filter (if it was defined) immediately, 
+    // but only if it exists, and before our custom WHERE runs.
+    if ( function_exists( 'wc_products_admin_search' ) ) {
+        // Use a priority lower than 99 so it runs before our where clause.
+        add_filter( 'posts_search', 'wc_products_admin_search', 50, 2 ); 
+    }
+}
+add_action( 'pre_get_posts', 'mg_admin_product_search_acf_meta_setup', 99 );
+
+
+/**
+ * STEP 2: Modifies the WHERE clause using a NAMED function to avoid the Closure serialization error.
+ * Hooked to: posts_where (priority 99)
+ */
+function mg_admin_product_search_acf_meta_where( $where ) {
+    global $wpdb, $mg_admin_search_term;
+
+    // If the term wasn't set in the setup function, bail out.
+    if ( empty( $mg_admin_search_term ) ) {
+        return $where;
+    }
+
+    $search_pattern = sprintf( '%%%s%%', esc_sql( $mg_admin_search_term ) );
+    
+    // Confirmed keys
+    $meta_keys = array( 'reference', 'oem' );
+    $meta_key_string = "'" . implode( "','", array_map( 'esc_sql', $meta_keys ) ) . "'";
+    
+    // Use a subquery to find product IDs that match the meta data.
+    $meta_search_condition = $wpdb->prepare(
+        " OR (
+            {$wpdb->posts}.ID IN (
+                SELECT post_id
+                FROM {$wpdb->postmeta}
+                WHERE meta_key IN ({$meta_key_string})
+                AND meta_value LIKE %s
+            )
+        ) ",
+        $search_pattern
+    );
+
+    // Append the new search condition to the existing WHERE clause.
+    $where .= $meta_search_condition;
+
+    // IMPORTANT: Remove the filter after execution to prevent it from running on subsequent queries.
+    remove_filter( 'posts_where', 'mg_admin_product_search_acf_meta_where', 99 );
+
+    return $where;
+}
+
 ?>
