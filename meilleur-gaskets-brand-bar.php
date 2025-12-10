@@ -1569,7 +1569,7 @@ function show_product_details_acf() {
         echo '<div class="product-details-table">';
         
         // Reference and OEM (labels will be handled by TranslatePress string translation)
-        echo '<p><strong>Référence:</strong> ' . get_field('reference') . '</p>';
+        echo '<p><strong>Reference:</strong> ' . get_field('reference') . '</p>';
         echo '<p><strong>OEM:</strong> ' . get_field('oem') . '</p>';
         
         // Designation (value is custom handled by ACF)
