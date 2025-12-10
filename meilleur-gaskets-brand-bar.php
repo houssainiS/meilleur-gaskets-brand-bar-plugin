@@ -2148,56 +2148,71 @@ function custom_set_zero_price_for_empty_products( $cart_object ) {
 // Hook runs every time WooCommerce calculates the totals (cart/checkout pages)
 add_action( 'woocommerce_before_calculate_totals', 'custom_set_zero_price_for_empty_products', 10, 1 );
 
+
 // =========================================================
-// SECTION 20: DISABLE RIGHT CLICKING ON WOOCOMMERCE IMAGES (Final Scope)
+// SECTION 20: DYNAMIC RIGHT CLICK DISABLE FOR WOOCOMMERCE
 // =========================================================
 
-function disable_product_image_right_click_final() {
-    // Only proceed if WooCommerce is active and we are on a relevant page
-    if ( function_exists( 'is_woocommerce' ) && ( is_product() || is_shop() || is_product_category() || is_product_tag() ) ) {
+/**
+ * Disables right-click based on the WooCommerce page type:
+ * - Shop/Category Pages: Only blocks images.
+ * - Single Product Page: Blocks the entire page (most secure against zoom/overlays).
+ */
+function disable_product_image_right_click_dynamic() {
+
+    // Ensure WooCommerce functions exist
+    if ( ! function_exists( 'is_woocommerce' ) ) {
+        return;
+    }
+
+    // 1. Logic for Single Product Page (Most secure: disables full right-click)
+    if ( is_product() ) {
         ?>
         <script type="text/javascript">
             (function($) {
-                // *** THE MOST AGGRESSIVE RIGHT-CLICK DISABLE ***
-                // We attach the contextmenu handler directly to the entire document body.
-                // Since the PHP IF statement above limits this to WC pages, the right-click
-                // will be disabled everywhere on these specific pages.
-
-                // 1. Disable Right-Click (Context Menu) on the entire body of WC pages
+                // Disable Right-Click on the entire body for maximum security against zoom/overlays
                 $(document).on('contextmenu', 'body', function(e) {
                     e.preventDefault();
                     e.stopPropagation();
                     return false;
                 });
-
-                // 2. Disable Image Dragging on all potential image containers
-                const allSelectors = '.woocommerce-product-gallery, .woocommerce-loop-product__link, .zoomContainer, .zoomImg, img';
-                
+                // Also block dragging images on the single product page
+                const allSelectors = '.woocommerce-product-gallery, .woocommerce-product-gallery__wrapper, .zoomContainer, .zoomImg, img';
                 $(document).on('dragstart', allSelectors, function(e) {
                     e.preventDefault();
                     return false;
                 });
-
             })(jQuery);
         </script>
-        <style>
-            /* CSS to disable highlighting/selecting across the WC content area */
-            .woocommerce-product-gallery, 
-            .woocommerce-loop-product__link,
-            .zoomContainer,
-            .woocommerce {
-                -webkit-touch-callout: none !important;
-                -webkit-user-select: none !important;
-                -khtml-user-select: none !important;
-                -moz-user-select: none !important;
-                -ms-user-select: none !important;
-                user-select: none !important;
-                -webkit-user-drag: none !important;
-            }
-        </style>
+        <?php
+    } 
+    
+    // 2. Logic for Shop/Category/Tag Pages (Less intrusive: only blocks images)
+    else if ( is_shop() || is_product_category() || is_product_tag() ) {
+        ?>
+        <script type="text/javascript">
+            (function($) {
+                // Define selectors for images in the shop/loop view
+                const shop_image_selectors = '.woocommerce-loop-product__link img, .attachment-woocommerce_thumbnail img, .product-category img';
+                
+                // Use event delegation on the document body to block only image right-clicks
+                $('body').on('contextmenu', shop_image_selectors, function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    return false;
+                });
+                
+                // Block dragging on these images
+                $('body').on('dragstart', shop_image_selectors, function(e) {
+                    e.preventDefault();
+                    return false;
+                });
+            })(jQuery);
+        </script>
         <?php
     }
 }
-add_action('wp_footer', 'disable_product_image_right_click_final');
 
+// Ensure the function is hooked to run after jQuery and all scripts are loaded
+add_action('wp_footer', 'disable_product_image_right_click_dynamic');
 ?>
