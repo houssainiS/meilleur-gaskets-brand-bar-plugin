@@ -2101,4 +2101,51 @@ function mg_admin_product_search_acf_meta_where( $where ) {
     return $where;
 }
 
+
+// =========================================================
+// SECTION 19: YOU CAN STILL ORDER PRODUCT WITHOUT A PRICE
+// =========================================================
+
+// --- PART 1: Make the product purchasable if the price is empty ---
+function custom_make_product_purchasable_no_price( $is_purchasable, $product ) {
+    // Check if the product price is explicitly set to an empty string.
+    // get_price() returns an empty string when no price is set.
+    if ( '' === $product->get_price() ) {
+        // Return TRUE to force it to be purchasable (shows 'Add to Cart')
+        return true; 
+    }
+    
+    // For all other cases (price > 0 or price = 0), use the default check.
+    return $is_purchasable;
+}
+add_filter( 'woocommerce_is_purchasable', 'custom_make_product_purchasable_no_price', 10, 2 );
+
+
+// --- PART 2: Set the price to 0 in the cart for empty-priced products ---
+function custom_set_zero_price_for_empty_products( $cart_object ) {
+    // Check to ensure this runs only on the frontend, not in the admin.
+    if ( is_admin() && ! defined( 'DOING_AJAX' ) ) {
+        return;
+    }
+
+    // Check if the cart is empty or not yet fully loaded
+    if ( empty( $cart_object->cart_contents ) ) {
+        return;
+    }
+
+    // Loop through all items in the cart
+    foreach ( $cart_object->get_cart() as $cart_item_key => $cart_item ) {
+        /** @var WC_Product $product */
+        $product = $cart_item['data'];
+
+        // Use the same check: if the product price is empty
+        if ( '' === $product->get_price() ) {
+            // Set the price of the product object in the cart to 0
+            $cart_item['data']->set_price( 0 );
+        }
+    }
+}
+// Hook runs every time WooCommerce calculates the totals (cart/checkout pages)
+add_action( 'woocommerce_before_calculate_totals', 'custom_set_zero_price_for_empty_products', 10, 1 );
+
 ?>
