@@ -1561,7 +1561,7 @@ function show_product_details_acf() {
                 $designation_value = get_field('designation');
             }
         } else {
-            $designation_label = 'Désignation:';
+            $designation_label = 'Designation:';
             $designation_value = get_field('designation');
         }
 
@@ -1576,8 +1576,8 @@ function show_product_details_acf() {
         echo '<p><strong>' . $designation_label . '</strong> ' . $designation_value . '</p>';
         
         // Compatible and Type Véhicule (value will be from the original ACF field)
-        echo '<p><strong>Compatible:</strong> ' . get_field('compatible') . '</p>';
-        echo '<p><strong>Type Véhicule:</strong> ' . get_field('type_veicule') . '</p>';
+        echo '<p><strong>Equivalent:</strong> ' . get_field('compatible') . '</p>';
+        echo '<p><strong>Type Vehicule:</strong> ' . get_field('type_veicule') . '</p>';
         
         echo '</div>';
     }
