@@ -2215,4 +2215,61 @@ function disable_product_image_right_click_dynamic() {
 
 // Ensure the function is hooked to run after jQuery and all scripts are loaded
 add_action('wp_footer', 'disable_product_image_right_click_dynamic');
+
+// =========================================================
+// SECTION 21: JAVASCRIPT FIX FOR WOOSTIFY/WOOCOMMERCE IMAGE CROPPING (CORRECTED TARGET)
+// =========================================================
+
+/**
+ * Executes a JavaScript fix to override Woostify/Elementor's fixed image height script
+ * by targeting the correct wrapper element.
+ */
+function fix_woostify_image_cropping_js() {
+
+    // Only apply this fix on product archive pages (Shop, Category, Tag)
+    if ( is_shop() || is_product_category() || is_product_tag() ) {
+        ?>
+        <script type="text/javascript">
+            (function() {
+                // Wait for the entire page content (including theme scripts) to be fully loaded
+                document.addEventListener('DOMContentLoaded', function() {
+                    
+                    // --- CRITICAL CHANGE: Target the .product-loop-image-wrapper ---
+                    const imageContainers = document.querySelectorAll('.product-loop-image-wrapper');
+                    
+                    // Iterate through each product image container
+                    imageContainers.forEach(containerWrapper => {
+                        
+                        // --- 1. Reset Height of the Container Wrapper ---
+                        // Force the container to use auto height and show overflowing content
+                        containerWrapper.style.height = 'auto';
+                        containerWrapper.style.paddingBottom = '0';
+                        containerWrapper.style.overflow = 'visible';
+                        
+                        // --- 2. Remove the Problematic Class ---
+                        // This forcefully deletes the class responsible for the fixed height
+                        containerWrapper.classList.remove('has-equal-image-height');
+                        
+                        // Find the actual image inside the wrapper
+                        const img = containerWrapper.querySelector('img');
+                        
+                        if (img) {
+                            // --- 3. Force Image to Contain (No Crop) ---
+                            // Guarantee that the WHOLE image fits inside its parent box
+                            img.style.objectFit = 'contain';
+                            img.style.width = '100%';
+                            img.style.height = 'auto'; // Use natural height
+                            img.style.maxHeight = '450px'; // Safety max-height
+                            img.style.backgroundColor = '#ffffff'; // Fill background with white for clean edges
+                        }
+                    });
+                });
+            })();
+        </script>
+        <?php
+    }
+}
+
+// Ensure the function runs in the footer, AFTER theme scripts have applied their fixed height
+add_action('wp_footer', 'fix_woostify_image_cropping_js');
 ?>
