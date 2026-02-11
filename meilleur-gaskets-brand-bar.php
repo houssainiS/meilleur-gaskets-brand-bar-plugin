@@ -2272,4 +2272,100 @@ function fix_woostify_image_cropping_js() {
 
 // Ensure the function runs in the footer, AFTER theme scripts have applied their fixed height
 add_action('wp_footer', 'fix_woostify_image_cropping_js');
+
+// =========================================================
+// SECTION 22: ADVANCED ADMIN CLEANUP (ELEMENTOR, JEG KIT, TOP BAR)
+// =========================================================
+
+/**
+ * 1. Redirect Non-Admins from the dashboard to the Products page.
+ */
+function mg_custom_admin_redirects() {
+    if ( is_admin() && ! current_user_can( 'manage_options' ) && ( ! defined( 'DOING_AJAX' ) || ! DOING_AJAX ) ) {
+        if ( basename( $_SERVER['PHP_SELF'] ) == 'index.php' ) {
+            wp_redirect( admin_url( 'edit.php?post_type=product' ) );
+            exit;
+        }
+    }
+}
+add_action( 'admin_init', 'mg_custom_admin_redirects' );
+
+/**
+ * 2. Remove Sidebar Menus (Elementor, Jeg Kit, Yoast) for non-admins.
+ */
+function mg_remove_sidebar_menus_for_staff() {
+    if ( ! current_user_can( 'manage_options' ) ) {
+        // Elementor
+        remove_menu_page( 'elementor' );
+        remove_menu_page( 'elementor-home' );
+        remove_menu_page( 'edit.php?post_type=elementor_library' );
+        
+        // Jeg Kit & Yoast
+        remove_menu_page( 'jkit' );
+        remove_menu_page( 'jekit' );
+        remove_menu_page( 'jeg-dashboard' );
+        remove_menu_page( 'wpseo_dashboard' );
+    }
+}
+add_action( 'admin_menu', 'mg_remove_sidebar_menus_for_staff', 9999 );
+
+/**
+ * 3. Remove Items from the TOP ADMIN BAR (Yoast, Jeg Kit, Comments, New, etc.)
+ */
+function mg_cleanup_top_admin_bar( $wp_admin_bar ) {
+    // Only remove for users who are NOT full administrators
+    if ( ! current_user_can( 'manage_options' ) ) {
+        
+        // Remove WordPress Logo
+        $wp_admin_bar->remove_node( 'wp-logo' );
+        
+        // Remove "En ligne" (WooCommerce visibility)
+        $wp_admin_bar->remove_node( 'woocommerce-site-visibility-badge' );
+        
+        // Remove Comments icon
+        $wp_admin_bar->remove_node( 'comments' );
+        
+        // Remove "Créer" (New Content) plus icon
+        $wp_admin_bar->remove_node( 'new-content' );
+        
+        // Remove Yoast & Jeg Kit
+        $wp_admin_bar->remove_node( 'wpseo-menu' );
+        $wp_admin_bar->remove_node( 'jeg-kit' );
+        $wp_admin_bar->remove_node( 'jeg-menu' );
+        
+        // Remove Elementor
+        $wp_admin_bar->remove_node( 'elementor_inspector' );
+        $wp_admin_bar->remove_node( 'elementor_edit_page' );
+    }
+}
+add_action( 'admin_bar_menu', 'mg_cleanup_top_admin_bar', 9999 );
+
+/**
+ * 4. CSS Safety Net: Hide the IDs to ensure they never flicker or show
+ */
+function mg_force_hide_css_cleanup() {
+    if ( ! current_user_can( 'manage_options' ) ) {
+        echo '<style>
+            /* Hide Sidebar items */
+            #toplevel_page_elementor-home, #toplevel_page_elementor, 
+            #toplevel_page_jkit, #toplevel_page_jekit, 
+            #toplevel_page_wpseo_dashboard, #menu-comments { 
+                display: none !important; 
+            }
+
+            /* Hide Top Admin Bar items */
+            #wp-admin-bar-wp-logo,
+            #wp-admin-bar-woocommerce-site-visibility-badge,
+            #wp-admin-bar-comments,
+            #wp-admin-bar-new-content,
+            #wp-admin-bar-jeg-kit,
+            #wp-admin-bar-wpseo-menu { 
+                display: none !important; 
+            }
+        </style>';
+    }
+}
+add_action( 'admin_head', 'mg_force_hide_css_cleanup' );
+add_action( 'wp_head', 'mg_force_hide_css_cleanup' ); // Also hides it when they view the site front-end
+
 ?>
