@@ -1439,25 +1439,26 @@ add_filter( 'login_display_language_dropdown', '__return_false' );
 
 
 // =========================================================
-// SECTION 11: ADMIN MENU CUSTOMIZATION FOR PRODUCTS MANAGER ROLE
+// SECTION 11: ADMIN MENU CUSTOMIZATION FOR ALL STAFF ROLES
 // =========================================================
-// Restricts admin menu items for users with products_manager role
-// Shows only: Orders, Forms, and Products pages
+// Restricts admin menu items for users who are NOT Administrators.
+// Gives "Commandes" and "Formulaires" access to Product Managers AND Account Creators.
 
 /**
- * Customize admin menu for products_manager role
- * Removes Dashboard, Media, Posts, Comments, Tools, Elementor, WooCommerce menus
- * Adds custom Orders and Forms menus
+ * Customize admin menu for non-administrators
+ * Removes standard menus (Dashboard, Posts, etc.)
+ * Adds custom Orders and Metform menus for all staff roles.
  * Hooked to: admin_menu at priority 9999
  */
 add_action('admin_menu', function() {
     
-    // Check if user has products_manager role
+
     $user = wp_get_current_user();
-    if (in_array('products_manager', (array) $user->roles)) {
+    
+    // VERIFICATION : Appliquer à tout le monde SAUF l'Administrateur principal
+    if ( ! in_array( 'administrator', (array) $user->roles ) ) {
 
         // --- PART A: REMOVE STANDARD MENUS ---
-        
         remove_menu_page('index.php');           // Dashboard
         remove_menu_page('upload.php');          // Media
         remove_menu_page('edit.php');            // Posts
@@ -1468,20 +1469,20 @@ add_action('admin_menu', function() {
         remove_menu_page('woocommerce');         // WooCommerce Main Menu
         remove_menu_page('wc-admin');            // WooCommerce Admin
         remove_menu_page('wc-admin&path=/analytics'); // WooCommerce Analytics
-        remove_menu_page('metform-menu');        // Metform
+        remove_menu_page('metform-menu');        // Masquer le menu Metform par défaut (trop complexe)
 
         // Remove WooCommerce submenus
         remove_submenu_page('woocommerce', 'wc-settings');
         remove_submenu_page('woocommerce', 'wc-status');
 
-        // --- PART B: REMOVE STUBBORN MENUS BY SLUG MATCHING ---
+        // --- PART B: REMOVE STUBBORN MENUS BY SLUG ---
         global $menu;
         
         if (!empty($menu)) {
             foreach ($menu as $key => $item) {
                 $slug = $item[2];
 
-                // Remove payment menus
+                // Remove payment menus & Checkout
                 if (strpos($slug, 'PAYMENTS_MENU_ITEM') !== false || strpos($slug, 'tab=checkout') !== false) {
                     unset($menu[$key]);
                 }
@@ -1493,20 +1494,22 @@ add_action('admin_menu', function() {
             }
         }
 
-        // --- PART C: ADD CUSTOM MENUS ---
+        // --- PART C: ADD CUSTOM MENUS FOR STAFF ---
+        // Cela ajoute les menus pour TOUS les rôles staff (Product Manager, Account Creator, etc.)
         
-        // Add "Commandes" (Orders) menu
+        // 1. Ajouter "Commandes" (Orders)
         add_menu_page(
             'Commandes',
             'Commandes',
-            'edit_shop_orders',
+            'read', // 'read' permet à tout le monde de voir le menu (la restriction se fait au clic si besoin)
             'edit.php?post_type=shop_order',
             '',
             'dashicons-cart',
             6
         );
 
-        // Add "Formulaires" (Form Entries) menu
+        // 2. Ajouter "Formulaires" (Metform Entries)
+        // Maintenant visible pour tous les admins staff, pas seulement le product manager
         add_menu_page(
             'Form Entries',
             'Formulaires',
@@ -1520,8 +1523,8 @@ add_action('admin_menu', function() {
 }, 9999);
 
 /**
- * Allow products_manager role to edit Metform forms and entries
- * Forces Metform to use standard post capabilities
+ * Allow staff roles to edit Metform forms and entries
+ * Forces Metform to use standard post capabilities so staff can access it
  * Hooked to: register_post_type_args at priority 999
  */
 add_filter( 'register_post_type_args', function( $args, $post_type ) {
@@ -2367,5 +2370,145 @@ function mg_force_hide_css_cleanup() {
 }
 add_action( 'admin_head', 'mg_force_hide_css_cleanup' );
 add_action( 'wp_head', 'mg_force_hide_css_cleanup' ); // Also hides it when they view the site front-end
+// =========================================================
+// SECTION 22: ADMIN UI CLEANUP (TOP BAR & SIDEBAR)
+// =========================================================
+
+/**
+ * 1. Clean up Sidebar and Top Bar for Staff Roles
+ */
+add_action( 'admin_menu', function() {
+    $staff_roles = array( 'product_manager', 'accounts_creator' );
+    $user = wp_get_current_user();
+    if ( ! $user || ! isset($user->roles) ) return;
+    
+    $is_staff = array_intersect( $staff_roles, (array) $user->roles );
+
+    if ( $is_staff ) {
+        // Hide standard clutter from Sidebar
+        remove_menu_page( 'elementor' );
+        remove_menu_page( 'edit.php?post_type=elementor_library' );
+        remove_menu_page( 'jkit' );
+        remove_menu_page( 'wpseo_dashboard' );
+        remove_menu_page( 'edit-comments.php' );
+        remove_menu_page( 'accounts-creator-form' ); 
+    }
+}, 999 );
+
+/**
+ * 2. Remove Items from Top Bar specifically (Home page & Shop page)
+ */
+add_action( 'admin_bar_menu', function( $wp_admin_bar ) {
+    $user = wp_get_current_user();
+    if ( ! $user || ! isset($user->roles) ) return;
+
+    $staff_roles = array( 'product_manager', 'accounts_creator' );
+    if ( array_intersect( $staff_roles, (array) $user->roles ) ) {
+        
+        // --- Standard WordPress Items ---
+        $wp_admin_bar->remove_node( 'wp-logo' );
+        $wp_admin_bar->remove_node( 'comments' );
+        $wp_admin_bar->remove_node( 'new-content' );
+
+        // --- Elementor "Modifier avec Elementor" (Home Page fix) ---
+        $wp_admin_bar->remove_node( 'elementor_edit_page' );
+        
+        // --- Woo Variation Swatches "Clear Transient" (Shop Page fix) ---
+        $wp_admin_bar->remove_node( 'woo-variation-swatches-clear-transient' );
+
+        // --- WooCommerce specific nodes ---
+        $wp_admin_bar->remove_node( 'woocommerce-site-visibility-badge' );
+    }
+}, 9999 ); // High priority to run after plugins add their buttons
+
+/**
+ * 3. CSS Safety Net for frontend/backend
+ */
+add_action( 'wp_head', 'mg_staff_css_cleanup' );
+add_action( 'admin_head', 'mg_staff_css_cleanup' );
+function mg_staff_css_cleanup() {
+    $staff_roles = array( 'product_manager', 'accounts_creator' );
+    $user = wp_get_current_user();
+    if ( ! $user || ! isset($user->roles) ) return;
+
+    if ( array_intersect( $staff_roles, (array) $user->roles ) ) {
+        echo '<style>
+            /* Hide Top Bar items that might linger */
+            #wp-admin-bar-elementor_edit_page, 
+            #wp-admin-bar-woo-variation-swatches-clear-transient,
+            #wp-admin-bar-wp-logo, 
+            #wp-admin-bar-new-content,
+            #wp-admin-bar-comments { 
+                display: none !important; 
+            }
+        </style>';
+    }
+}
+
+// =========================================================
+// SECTION 23: USER MANAGEMENT (CUSTOMERS ONLY)
+// =========================================================
+
+/**
+ * 1. USER LIST FILTER: Only show "Customer" accounts to the Accounts Creator
+ */
+add_action('pre_user_query', function($user_search) {
+    if ( ! is_admin() ) return;
+
+    $user = wp_get_current_user();
+    if ( $user && in_array( 'accounts_creator', (array) $user->roles ) ) {
+        global $wpdb;
+        $user_search->query_where = str_replace(
+            'WHERE 1=1', 
+            "WHERE 1=1 AND {$wpdb->users}.ID IN (
+                SELECT user_id FROM {$wpdb->usermeta} 
+                WHERE meta_key = '{$wpdb->prefix}capabilities' 
+                AND meta_value LIKE '%\"customer\"%'
+            )", 
+            $user_search->query_where
+        );
+    }
+});
+
+/**
+ * 2. SCREEN CLEANUP: Hide unnecessary fields and the Role dropdown
+ */
+add_action('admin_head', function() {
+    $user = wp_get_current_user();
+    if ( $user && in_array( 'accounts_creator', (array) $user->roles ) ) {
+        echo '<style>
+            tr.user-role-wrap, .user-rich-editing-wrap, .user-admin-color-wrap, 
+            .user-comment-shortcuts-wrap, .user-admin-bar-front-wrap, 
+            .user-description-wrap, .user-url-wrap, .user-profile-picture-wrap,
+            .subsubsub { 
+                display: none !important; 
+            }
+        </style>';
+    }
+});
+
+/**
+ * 3. RESTRICT ROLES & KILL FRONTEND WARNING
+ */
+add_filter('editable_roles', function($roles) {
+    if ( ! is_array( $roles ) ) {
+        $roles = array();
+    }
+    if ( ! is_admin() ) {
+        return $roles;
+    }
+    $user = wp_get_current_user();
+    if ( $user && in_array( 'accounts_creator', (array) $user->roles ) ) {
+        $allowed = array( 'customer' );
+        $filtered = array();
+        foreach ( $roles as $key => $data ) {
+            if ( in_array( $key, $allowed ) ) {
+                $filtered[$key] = $data;
+            }
+        }
+        return ! empty( $filtered ) ? $filtered : array();
+    }
+    return $roles;
+}, 9999, 1);
 
 ?>
