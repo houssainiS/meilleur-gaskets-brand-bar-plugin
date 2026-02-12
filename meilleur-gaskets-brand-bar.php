@@ -2511,4 +2511,65 @@ add_filter('editable_roles', function($roles) {
     return $roles;
 }, 9999, 1);
 
+// =========================================================
+// SECTION 24: ACCOUNT REDIRECTS & RESTRICTIONS
+// =========================================================
+
+/**
+ * 1. Redirect ALL users to the Home Page after login
+ * Instead of going to "My Account", they go straight to the shop/home.
+ */
+add_filter( 'woocommerce_login_redirect', 'mg_redirect_to_home_after_login', 9999, 2 );
+function mg_redirect_to_home_after_login( $redirect, $user ) {
+    // If you want Admins to still go to dashboard, you can uncomment this line:
+    // if ( in_array( 'administrator', (array) $user->roles ) ) return admin_url();
+    
+    return home_url();
+}
+
+/**
+ * 2. Remove "Account Details" (Edit Account) tab from My Account Menu
+ * Prevents users from seeing the tab to change their name/password/email.
+ */
+add_filter( 'woocommerce_account_menu_items', 'mg_remove_edit_account_tab', 999 );
+function mg_remove_edit_account_tab( $items ) {
+    // Remove "Account details"
+    unset( $items['edit-account'] );
+    return $items;
+}
+
+/**
+ * 3. SECURITY: Block direct access to the "Edit Account" endpoint
+ * If someone tries to guess the URL (e.g. /my-account/edit-account/), kick them out.
+ */
+add_action( 'template_redirect', 'mg_block_edit_account_access' );
+function mg_block_edit_account_access() {
+    // Check if we are on the 'edit-account' endpoint of WooCommerce
+    if ( is_wc_endpoint_url( 'edit-account' ) ) {
+        // Redirect them back to the main My Account page (or Home)
+        wp_safe_redirect( wc_get_page_permalink( 'myaccount' ) );
+        exit;
+    }
+}
+
+/**
+ * 4. CSS: Hide the specific "Edit Account" Icon/Link on the Dashboard
+ * This targets the exact HTML structure you provided to make it invisible.
+ */
+add_action( 'wp_head', 'mg_hide_edit_account_ui_elements' );
+function mg_hide_edit_account_ui_elements() {
+    if ( ! is_account_page() ) return;
+    
+    echo '<style>
+        /* Hide the specific Dashboard icon link you found */
+        .woocommerce-MyAccount-content a[href*="edit-account"],
+        /* Hide the sidebar link just in case the PHP filter missed it */
+        .woocommerce-MyAccount-navigation-link--edit-account,
+        /* Hide any other links pointing to edit-account on this page */
+        a[href*="/my-account/edit-account/"] {
+            display: none !important;
+        }
+    </style>';
+}
+
 ?>
