@@ -819,12 +819,11 @@ function custom_hide_order_received_prices() {
     </style>';
 }
 
-
 // =========================================================
-// SECTION 9: BRAND CATALOGUE SYSTEM
+// SECTION 9: BRAND CATALOGUE SYSTEM (SECURE VIEWER)
 // =========================================================
 // Custom post type for managing brand catalogs with PDF uploads
-// Includes frontend shortcode display and PDF viewer
+// Includes frontend shortcode display, Secure PDF viewer, and grid layout
 
 /**
  * Register Custom Post Type: mg_brand_catalogue
@@ -1120,19 +1119,24 @@ function mg_catalogue_shortcode( $atts ) {
 
         $catalogue_post = mg_get_catalogue_by_brand_term_id( $term->term_id );
 
-        echo '<div class="mg-catalogue-detail">';
+        // SECURITY: oncontextmenu="return false" added to detail container
+        echo '<div class="mg-catalogue-detail" oncontextmenu="return false;">';
         echo '<p><a href="' . esc_url( get_permalink() ) . '" style="text-decoration:none; font-weight:bold;">&larr; Retour au catalogue</a></p>';
         echo '<h2 style="margin-bottom:20px;">' . esc_html( $term->name ) . '</h2>';
 
         if ( $catalogue_post ) {
-            $viewer_url = home_url( '?mg_pdf_viewer=' . $catalogue_post->ID );
+            // SECURITY: #toolbar=0&navpanes=0&scrollbar=0 added to URL
+            $viewer_url = home_url( '?mg_pdf_viewer=' . $catalogue_post->ID ) . '#toolbar=0&navpanes=0&scrollbar=0';
             
             // Download / Open Button
-            echo '<p><a class="mg-download-btn" href="' . esc_url( $viewer_url ) . '" target="_blank" rel="noopener">Ouvrir le PDF (Nouvel onglet)</a></p>';
+            echo '<p><a class="mg-download-btn" href="' . esc_url( home_url( '?mg_pdf_viewer=' . $catalogue_post->ID ) ) . '" target="_blank" rel="noopener">Ouvrir le PDF (Nouvel onglet)</a></p>';
             
             // PDF Container with Loader and Iframe
             echo '<div class="mg-embed-pdf">';
                 
+                // SECURITY: Transparent Shield (blocks interaction with iframe buttons)
+                echo '<div class="mg-pdf-shield"></div>';
+
                 // Loader (visible initially, hidden when PDF loads)
                 echo '<div id="mg-pdf-loader" class="mg-pdf-loader">';
                     echo '<div class="mg-pdf-spinner">';
@@ -1269,6 +1273,18 @@ function mg_catalogue_shortcode( $atts ) {
         overflow: hidden;
     }
 
+    /* SECURITY: The Shield overlay */
+    .mg-pdf-shield {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        z-index: 5;
+        background: rgba(255, 255, 255, 0); /* Completely transparent but intercepts clicks */
+        pointer-events: none;
+    }
+
     /* Iframe starts hidden to prevent white flash while loading */
     #mg-pdf-iframe {
         width: 100%;
@@ -1336,6 +1352,19 @@ function mg_catalogue_shortcode( $atts ) {
         font-weight: 500;
         color: #555;
     }
+
+    /* SECURITY: Anti-Print Styles */
+    @media print {
+        .mg-catalogue-detail { display: none !important; }
+        body:after {
+            content: "L'impression de ce catalogue n'est pas autorisée.";
+            display: block;
+            text-align: center;
+            font-size: 24px;
+            color: #D11D27;
+            padding: 50px;
+        }
+    }
     </style>
 
     <script>
@@ -1356,6 +1385,14 @@ function mg_catalogue_shortcode( $atts ) {
 
         // Fallback: Force show after 3.5 seconds (for cached PDFs or slow connections)
         setTimeout(onPdfLoaded, 3500);
+
+        // SECURITY: Block common keyboard shortcuts (Ctrl+S, Ctrl+P)
+        window.addEventListener('keydown', function(e) {
+            if ((e.ctrlKey || e.metaKey) && (e.key === 'p' || e.key === 's')) {
+                e.preventDefault();
+                alert('Cette action est désactivée pour protéger le contenu.');
+            }
+        });
     });
     </script>
     <?php
@@ -1397,7 +1434,6 @@ function mg_enqueue_admin_uploader($hook) {
     }
 }
 add_action('admin_enqueue_scripts', 'mg_enqueue_admin_uploader');
-
 
 // =========================================================
 // SECTION 10: UTILITY FIXES
