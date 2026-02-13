@@ -1075,6 +1075,8 @@ function mg_serve_catalogue_pdf() {
     }
 
     // --- SET HEADERS FOR INLINE PDF DISPLAY ---
+    header("Access-Control-Allow-Origin: " . home_url());
+    header("Access-Control-Allow-Methods: GET");
     header( 'Content-Type: application/pdf' );
     header( 'Content-Disposition: inline; filename="' . basename( $file_path ) . '"' );
     header( 'Content-Length: ' . filesize( $file_path ) );
@@ -1129,18 +1131,24 @@ function mg_catalogue_shortcode( $atts ) {
             $viewer_url = home_url( '?mg_pdf_viewer=' . $catalogue_post->ID );
             
             // PDF Container
-            echo '<div class="mg-embed-pdf" id="mg-pdf-container">';
+            echo '<div class="mg-embed-pdf" id="mg-pdf-container" oncontextmenu="return false;">';
                 
-                // SECURITY: Transparent Shield blocks interaction (Save Image, dragging, etc.)
+                // SECURITY: Transparent Shield blocks interaction
                 echo '<div class="mg-pdf-shield"></div>';
 
-                // Loader
+                // --- IMPROVED LOADER WITH PROGRESS BAR ---
                 echo '<div id="mg-pdf-loader" class="mg-pdf-loader">';
                     echo '<div class="mg-pdf-spinner">';
                         echo '<div class="mg-spinner-ring"></div>';
                         echo '<div class="mg-spinner-ring-inner"></div>';
                     echo '</div>';
-                    echo '<p class="mg-loader-text">chargement du catalogue...</p>';
+                    echo '<p class="mg-loader-text">Chargement du catalogue...</p>';
+                    
+                    // Progress Bar UI
+                    echo '<div class="mg-progress-wrapper">';
+                        echo '<div id="mg-pdf-progress-bar" style="width: 0%;"></div>';
+                    echo '</div>';
+                    echo '<small id="mg-pdf-percent" style="margin-top:10px; color:#666; font-family:sans-serif;">0%</small>';
                 echo '</div>';
 
                 // Container where PDF canvases will be drawn
@@ -1153,14 +1161,11 @@ function mg_catalogue_shortcode( $atts ) {
             ?>
             <script>
             document.addEventListener('DOMContentLoaded', function() {
-                // Polling to ensure pdfjsLib is loaded
                 const checkPdfJs = setInterval(function() {
-                    if (typeof window['pdfjs-dist/build/pdf'] !== 'undefined') {
+                    const lib = window['pdfjs-dist/build/pdf'] || window.pdfjsLib;
+                    if (lib) {
                         clearInterval(checkPdfJs);
-                        initPDF(window['pdfjs-dist/build/pdf']);
-                    } else if (typeof pdfjsLib !== 'undefined') {
-                        clearInterval(checkPdfJs);
-                        initPDF(pdfjsLib);
+                        initPDF(lib);
                     }
                 }, 100);
 
@@ -1170,22 +1175,38 @@ function mg_catalogue_shortcode( $atts ) {
                     const pdfUrl = '<?php echo esc_js($viewer_url); ?>';
                     const container = document.getElementById('mg-pdf-render-area');
                     const loader = document.getElementById('mg-pdf-loader');
-                    
-                    let pdfDoc = null;
+                    const progressBar = document.getElementById('mg-pdf-progress-bar');
+                    const percentText = document.getElementById('mg-pdf-percent');
 
-                    // Fetch the PDF securely
-                    pdfjs.getDocument(pdfUrl).promise.then(function(pdf) {
-                        pdfDoc = pdf;
-                        renderPage(1); // Start rendering from page 1
+                    // --- SECURE & OPTIMIZED FETCH ---
+                    const loadingTask = pdfjs.getDocument({
+                        url: pdfUrl,
+                        disableAutoFetch: false,
+                        disableStream: false, // Allows the 80MB file to load in pieces
+                    });
+
+                    // Update Progress Bar
+                    loadingTask.onProgress = function(progress) {
+                        if (progress.total > 0) {
+                            const percent = Math.round((progress.loaded / progress.total) * 100);
+                            progressBar.style.width = percent + '%';
+                            percentText.innerHTML = percent + '% (' + (progress.loaded / 1024 / 1024).toFixed(1) + ' MB / ' + (progress.total / 1024 / 1024).toFixed(1) + ' MB)';
+                        }
+                    };
+
+                    loadingTask.promise.then(function(pdfDoc) {
+                        renderPages(pdfDoc);
                     }).catch(function(error) {
-                        loader.innerHTML = '<p style="color:red;">Erreur de chargement du catalogue. Assurez-vous d\'être connecté correctement.</p>';
+                        loader.innerHTML = '<p style="color:red; padding:20px; text-align:center;">Erreur de chargement : Le fichier est volumineux ou la connexion est instable.<br><small>' + error.message + '</small></p>';
                         console.error('PDF Load Error:', error);
                     });
 
-                    // Recursive function to render pages in order
-                    function renderPage(num) {
-                        pdfDoc.getPage(num).then(function(page) {
-                            // Scale up for better clarity on mobile and desktop
+                    // Function to render all pages sequentially
+                    async function renderPages(pdfDoc) {
+                        for (let num = 1; num <= pdfDoc.numPages; num++) {
+                            const page = await pdfDoc.getPage(num);
+                            
+                            // Visual quality scaling
                             const scale = window.innerWidth < 768 ? 1.2 : 1.8; 
                             const viewport = page.getViewport({scale: scale});
                             
@@ -1202,21 +1223,17 @@ function mg_catalogue_shortcode( $atts ) {
                             container.appendChild(canvas);
 
                             const renderContext = { canvasContext: ctx, viewport: viewport };
-                            page.render(renderContext).promise.then(function() {
-                                if (num === 1) {
-                                    // Hide loader after first page is ready so users can start reading
-                                    loader.classList.add('hidden');
-                                }
-                                
-                                if (num < pdfDoc.numPages) {
-                                    renderPage(num + 1); // Render next page
-                                }
-                            });
-                        });
+                            await page.render(renderContext).promise;
+
+                            if (num === 1) {
+                                // Hide loader as soon as page 1 is ready so they can start looking
+                                loader.classList.add('hidden');
+                            }
+                        }
                     }
                 }
 
-                // SECURITY: Block common keyboard shortcuts (Ctrl+S, Ctrl+P, Ctrl+U)
+                // SECURITY: Block common keyboard shortcuts
                 window.addEventListener('keydown', function(e) {
                     if ((e.ctrlKey || e.metaKey) && (e.key === 'p' || e.key === 's' || e.key === 'u')) {
                         e.preventDefault();
@@ -1225,6 +1242,28 @@ function mg_catalogue_shortcode( $atts ) {
                 });
             });
             </script>
+            <style>
+                /* Progress Bar Styles */
+                .mg-progress-wrapper {
+                    width: 250px;
+                    height: 12px;
+                    background: #f0f0f0;
+                    border-radius: 10px;
+                    margin-top: 15px;
+                    overflow: hidden;
+                    border: 1px solid #ddd;
+                }
+                #mg-pdf-progress-bar {
+                    height: 100%;
+                    background: #D11D27; /* Your Brand Red */
+                    width: 0%;
+                    transition: width 0.3s ease;
+                }
+                /* Ensure loader stays on top during progress */
+                .mg-pdf-loader {
+                    z-index: 100 !important;
+                }
+            </style>
             <?php
 
         } else {
