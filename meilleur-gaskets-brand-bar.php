@@ -818,12 +818,11 @@ function custom_hide_order_received_prices() {
         }
     </style>';
 }
-
 // =========================================================
 // SECTION 9: BRAND CATALOGUE SYSTEM (SECURE VIEWER)
 // =========================================================
 // Custom post type for managing brand catalogs with PDF uploads
-// Includes frontend shortcode display, Secure PDF viewer, and grid layout
+// Includes frontend shortcode display, Secure PDF.js viewer, and grid layout
 
 /**
  * Register Custom Post Type: mg_brand_catalogue
@@ -1015,9 +1014,8 @@ function mg_get_catalogue_by_brand_term_id( $term_id ) {
 }
 
 /**
- * Serve PDF file inline in iframe or browser
+ * Serve PDF file strictly for PDF.js to fetch
  * Handles PDF display via query parameter: ?mg_pdf_viewer=POST_ID
- * Clears output buffers and sends proper headers
  * Hooked to: init at priority 0 (runs before other hooks)
  */
 function mg_serve_catalogue_pdf() {
@@ -1029,6 +1027,13 @@ function mg_serve_catalogue_pdf() {
     // Check if our PDF viewer query var is set
     if ( ! isset( $_GET['mg_pdf_viewer'] ) ) {
         return;
+    }
+
+    // --- NEW SECURITY CHECK: Block direct URL access ---
+    // This ensures the PDF can only be loaded by the site itself (via PDF.js fetch)
+    if ( ! isset( $_SERVER['HTTP_REFERER'] ) || strpos( $_SERVER['HTTP_REFERER'], home_url() ) === false ) {
+        header("HTTP/1.0 403 Forbidden");
+        die('Accès refusé. Veuillez consulter le catalogue de manière sécurisée via le site web.');
     }
 
     $catalogue_post_id = intval( $_GET['mg_pdf_viewer'] );
@@ -1098,18 +1103,14 @@ add_action( 'init', 'mg_serve_catalogue_pdf', 0 );
 
 /**
  * Shortcode: [mg_catalogue]
- * Frontend display of brand catalogue
- * Shows:
- * - Grid view: List of all brands (catalog page)
- * - Detail view: Single brand with PDF viewer (when ?brand=SLUG)
- * Returns: HTML content
+ * Frontend display of brand catalogue with PDF.js secure rendering
  */
 function mg_catalogue_shortcode( $atts ) {
     ob_start();
 
     $brand_slug = isset( $_GET['brand'] ) ? sanitize_text_field( wp_unslash( $_GET['brand'] ) ) : '';
 
-    // --- DETAIL VIEW: Single Brand with PDF ---
+    // --- DETAIL VIEW: Single Brand with Secure PDF.js Viewer ---
     if ( $brand_slug ) {
         $term = get_term_by( 'slug', $brand_slug, 'pwb-brand' );
         if ( ! $term || is_wp_error( $term ) ) {
@@ -1119,37 +1120,112 @@ function mg_catalogue_shortcode( $atts ) {
 
         $catalogue_post = mg_get_catalogue_by_brand_term_id( $term->term_id );
 
-        // SECURITY: oncontextmenu="return false" added to detail container
+        // SECURITY: oncontextmenu blocks right clicks on the entire viewer wrapper
         echo '<div class="mg-catalogue-detail" oncontextmenu="return false;">';
         echo '<p><a href="' . esc_url( get_permalink() ) . '" style="text-decoration:none; font-weight:bold;">&larr; Retour au catalogue</a></p>';
         echo '<h2 style="margin-bottom:20px;">' . esc_html( $term->name ) . '</h2>';
 
         if ( $catalogue_post ) {
-            // SECURITY: #toolbar=0&navpanes=0&scrollbar=0 added to URL
-            $viewer_url = home_url( '?mg_pdf_viewer=' . $catalogue_post->ID ) . '#toolbar=0&navpanes=0&scrollbar=0';
+            $viewer_url = home_url( '?mg_pdf_viewer=' . $catalogue_post->ID );
             
-            // Download / Open Button
-            echo '<p><a class="mg-download-btn" href="' . esc_url( home_url( '?mg_pdf_viewer=' . $catalogue_post->ID ) ) . '" target="_blank" rel="noopener">Ouvrir le PDF (Nouvel onglet)</a></p>';
-            
-            // PDF Container with Loader and Iframe
-            echo '<div class="mg-embed-pdf">';
+            // PDF Container
+            echo '<div class="mg-embed-pdf" id="mg-pdf-container">';
                 
-                // SECURITY: Transparent Shield (blocks interaction with iframe buttons)
+                // SECURITY: Transparent Shield blocks interaction (Save Image, dragging, etc.)
                 echo '<div class="mg-pdf-shield"></div>';
 
-                // Loader (visible initially, hidden when PDF loads)
+                // Loader
                 echo '<div id="mg-pdf-loader" class="mg-pdf-loader">';
                     echo '<div class="mg-pdf-spinner">';
                         echo '<div class="mg-spinner-ring"></div>';
                         echo '<div class="mg-spinner-ring-inner"></div>';
                     echo '</div>';
-                    echo '<p class="mg-loader-text">Chargement du catalogue...</p>';
+                    echo '<p class="mg-loader-text">chargement du catalogue...</p>';
                 echo '</div>';
 
-                // Iframe for PDF display (hidden initially with opacity 0)
-                echo '<iframe id="mg-pdf-iframe" src="' . esc_url( $viewer_url ) . '" width="100%" height="100%" frameborder="0" allowfullscreen></iframe>';
+                // Container where PDF canvases will be drawn
+                echo '<div id="mg-pdf-render-area"></div>';
             
             echo '</div>';
+
+            // --- LOAD PDF.JS AND RENDER SCRIPT ---
+            wp_enqueue_script( 'pdfjs-lib', 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js', array(), '3.4.120', true );
+            ?>
+            <script>
+            document.addEventListener('DOMContentLoaded', function() {
+                // Polling to ensure pdfjsLib is loaded
+                const checkPdfJs = setInterval(function() {
+                    if (typeof window['pdfjs-dist/build/pdf'] !== 'undefined') {
+                        clearInterval(checkPdfJs);
+                        initPDF(window['pdfjs-dist/build/pdf']);
+                    } else if (typeof pdfjsLib !== 'undefined') {
+                        clearInterval(checkPdfJs);
+                        initPDF(pdfjsLib);
+                    }
+                }, 100);
+
+                function initPDF(pdfjs) {
+                    pdfjs.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js';
+                    
+                    const pdfUrl = '<?php echo esc_js($viewer_url); ?>';
+                    const container = document.getElementById('mg-pdf-render-area');
+                    const loader = document.getElementById('mg-pdf-loader');
+                    
+                    let pdfDoc = null;
+
+                    // Fetch the PDF securely
+                    pdfjs.getDocument(pdfUrl).promise.then(function(pdf) {
+                        pdfDoc = pdf;
+                        renderPage(1); // Start rendering from page 1
+                    }).catch(function(error) {
+                        loader.innerHTML = '<p style="color:red;">Erreur de chargement du catalogue. Assurez-vous d\'être connecté correctement.</p>';
+                        console.error('PDF Load Error:', error);
+                    });
+
+                    // Recursive function to render pages in order
+                    function renderPage(num) {
+                        pdfDoc.getPage(num).then(function(page) {
+                            // Scale up for better clarity on mobile and desktop
+                            const scale = window.innerWidth < 768 ? 1.2 : 1.8; 
+                            const viewport = page.getViewport({scale: scale});
+                            
+                            const canvas = document.createElement('canvas');
+                            const ctx = canvas.getContext('2d');
+                            canvas.height = viewport.height;
+                            canvas.width = viewport.width;
+                            canvas.style.display = 'block';
+                            canvas.style.margin = '0 auto 15px auto';
+                            canvas.style.maxWidth = '100%';
+                            canvas.style.height = 'auto';
+                            canvas.style.boxShadow = '0 2px 5px rgba(0,0,0,0.1)';
+
+                            container.appendChild(canvas);
+
+                            const renderContext = { canvasContext: ctx, viewport: viewport };
+                            page.render(renderContext).promise.then(function() {
+                                if (num === 1) {
+                                    // Hide loader after first page is ready so users can start reading
+                                    loader.classList.add('hidden');
+                                }
+                                
+                                if (num < pdfDoc.numPages) {
+                                    renderPage(num + 1); // Render next page
+                                }
+                            });
+                        });
+                    }
+                }
+
+                // SECURITY: Block common keyboard shortcuts (Ctrl+S, Ctrl+P, Ctrl+U)
+                window.addEventListener('keydown', function(e) {
+                    if ((e.ctrlKey || e.metaKey) && (e.key === 'p' || e.key === 's' || e.key === 'u')) {
+                        e.preventDefault();
+                        alert('Cette action est désactivée pour protéger le contenu.');
+                    }
+                });
+            });
+            </script>
+            <?php
 
         } else {
             echo '<div style="padding:20px; background:#f9f9f9; border:1px solid #eee;">Désolé, aucun catalogue disponible pour cette marque pour le moment.</div>';
@@ -1198,7 +1274,6 @@ function mg_catalogue_shortcode( $atts ) {
     ?>
     <style>
     /* --- GRID VIEW STYLES --- */
-    
     .mg-catalogue-grid {
         display: grid;
         grid-template-columns: repeat(auto-fill, minmax(150px,1fr));
@@ -1245,99 +1320,65 @@ function mg_catalogue_shortcode( $atts ) {
         text-decoration: none;
     }
 
-    .mg-download-btn {
-        display: inline-block;
-        padding: 8px 12px;
-        border: 1px solid #ddd;
-        background: #f7f7f7;
-        border-radius: 6px;
-        text-decoration: none;
-        color: #333;
-        margin-bottom: 12px;
-        font-size: 14px;
-    }
-
-    .mg-download-btn:hover {
-        background: #eee;
-    }
-
-    /* --- PDF VIEWER STYLES --- */
-    
+    /* --- UPDATED PDF VIEWER STYLES --- */
     .mg-embed-pdf {
         position: relative;
         width: 100%;
         height: 800px;
-        background: #f0f0f0;
+        background: #9e9e9e; /* Real PDF viewer background color */
         border: 1px solid #e5e5e5;
         border-radius: 4px;
-        overflow: hidden;
+        overflow-y: auto; /* Allows user to scroll the canvases */
+        overflow-x: hidden;
+        padding: 20px 0;
     }
 
-    /* SECURITY: The Shield overlay */
+    /* SECURITY: Makes rendered canvases unclickable */
+    #mg-pdf-render-area {
+        position: relative;
+        pointer-events: none; /* Prevents right-click and dragging on canvases */
+        user-select: none;
+        -webkit-user-select: none;
+        -moz-user-select: none;
+    }
+
+    /* SECURITY: The transparent shield overlay */
     .mg-pdf-shield {
         position: absolute;
         top: 0;
         left: 0;
-        width: 100%;
-        height: 100%;
+        right: 0;
+        bottom: 0;
         z-index: 5;
-        background: rgba(255, 255, 255, 0); /* Completely transparent but intercepts clicks */
+        background: transparent;
         pointer-events: none;
     }
 
-    /* Iframe starts hidden to prevent white flash while loading */
-    #mg-pdf-iframe {
-        width: 100%;
-        height: 100%;
-        opacity: 0;
-        transition: opacity 0.5s ease-in;
-        display: block;
-    }
-
-    /* Loader overlay - centered and initially visible */
+    /* Loader overlay */
     .mg-pdf-loader {
         position: absolute;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        background: #ffffff;
-        z-index: 10;
+        top: 0; left: 0; width: 100%; height: 100%;
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        background: #ffffff; z-index: 10;
         transition: opacity 0.5s ease-out, visibility 0.5s;
     }
 
-    /* Hide loader when PDF loads */
     .mg-pdf-loader.hidden {
-        opacity: 0;
-        visibility: hidden;
-        pointer-events: none;
+        opacity: 0; visibility: hidden; pointer-events: none;
     }
 
-    /* Spinner animation */
     .mg-pdf-spinner {
-        position: relative;
-        width: 60px;
-        height: 60px;
-        margin-bottom: 15px;
+        position: relative; width: 60px; height: 60px; margin-bottom: 15px;
     }
 
     .mg-spinner-ring {
-        position: absolute;
-        top: 0; left: 0; width: 100%; height: 100%;
-        border: 4px solid rgba(209, 29, 39, 0.2);
-        border-radius: 50%;
+        position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+        border: 4px solid rgba(209, 29, 39, 0.2); border-radius: 50%;
     }
 
     .mg-spinner-ring-inner {
-        position: absolute;
-        top: 0; left: 0; width: 100%; height: 100%;
-        border: 4px solid transparent;
-        border-top-color: #D11D27;
-        border-radius: 50%;
+        position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+        border: 4px solid transparent; border-top-color: #D11D27; border-radius: 50%;
         animation: mg-spin 1s linear infinite;
     }
 
@@ -1348,9 +1389,7 @@ function mg_catalogue_shortcode( $atts ) {
 
     .mg-loader-text {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-        font-size: 14px;
-        font-weight: 500;
-        color: #555;
+        font-size: 14px; font-weight: 500; color: #555;
     }
 
     /* SECURITY: Anti-Print Styles */
@@ -1358,43 +1397,10 @@ function mg_catalogue_shortcode( $atts ) {
         .mg-catalogue-detail { display: none !important; }
         body:after {
             content: "L'impression de ce catalogue n'est pas autorisée.";
-            display: block;
-            text-align: center;
-            font-size: 24px;
-            color: #D11D27;
-            padding: 50px;
+            display: block; text-align: center; font-size: 24px; color: #D11D27; padding: 50px;
         }
     }
     </style>
-
-    <script>
-    document.addEventListener('DOMContentLoaded', function() {
-        var iframe = document.getElementById('mg-pdf-iframe');
-        var loader = document.getElementById('mg-pdf-loader');
-
-        if (!iframe || !loader) return;
-
-        function onPdfLoaded() {
-            // Hide loader and show PDF
-            loader.classList.add('hidden');
-            iframe.style.opacity = '1';
-        }
-
-        // Listen for iframe load event
-        iframe.addEventListener('load', onPdfLoaded);
-
-        // Fallback: Force show after 3.5 seconds (for cached PDFs or slow connections)
-        setTimeout(onPdfLoaded, 3500);
-
-        // SECURITY: Block common keyboard shortcuts (Ctrl+S, Ctrl+P)
-        window.addEventListener('keydown', function(e) {
-            if ((e.ctrlKey || e.metaKey) && (e.key === 'p' || e.key === 's')) {
-                e.preventDefault();
-                alert('Cette action est désactivée pour protéger le contenu.');
-            }
-        });
-    });
-    </script>
     <?php
 
     return ob_get_clean();
