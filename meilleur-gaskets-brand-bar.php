@@ -818,6 +818,7 @@ function custom_hide_order_received_prices() {
         }
     </style>';
 }
+
 // =========================================================
 // SECTION 9: BRAND CATALOGUE SYSTEM (SECURE VIEWER)
 // =========================================================
@@ -1018,6 +1019,7 @@ function mg_get_catalogue_by_brand_term_id( $term_id ) {
  * Handles PDF display via query parameter: ?mg_pdf_viewer=POST_ID
  * Hooked to: init at priority 0 (runs before other hooks)
  */
+
 function mg_serve_catalogue_pdf() {
     // Don't run this in admin area
     if ( is_admin() ) {
@@ -1029,74 +1031,85 @@ function mg_serve_catalogue_pdf() {
         return;
     }
 
-    // --- NEW SECURITY CHECK: Block direct URL access ---
-    // This ensures the PDF can only be loaded by the site itself (via PDF.js fetch)
+    // --- SECURITY: Block direct URL access ---
     if ( ! isset( $_SERVER['HTTP_REFERER'] ) || strpos( $_SERVER['HTTP_REFERER'], home_url() ) === false ) {
         header("HTTP/1.0 403 Forbidden");
-        die('Accès refusé. Veuillez consulter le catalogue de manière sécurisée via le site web.');
+        die('Accès refusé. Veuillez consulter le catalogue via le site web.');
     }
 
     $catalogue_post_id = intval( $_GET['mg_pdf_viewer'] );
-    
-    // --- SECURITY: VERIFY POST EXISTS AND IS CORRECT TYPE ---
     $post = get_post( $catalogue_post_id );
+    
     if ( ! $post || $post->post_type !== 'mg_brand_catalogue' ) {
         header("HTTP/1.0 404 Not Found");
         die('File not found.');
     }
 
-    // --- GET PDF ATTACHMENT ID AND FILE PATH ---
     $att_id = intval( get_post_meta( $catalogue_post_id, '_mg_brand_pdf', true ) );
-    if ( ! $att_id ) {
-        header("HTTP/1.0 404 Not Found");
-        die('No PDF attached.');
-    }
-
     $file_path = get_attached_file( $att_id );
+
     if ( ! $file_path || ! file_exists( $file_path ) ) {
         header("HTTP/1.0 404 Not Found");
-        die('PDF file missing from server.');
+        die('PDF file missing.');
     }
 
-    // --- CRITICAL SECTION: PREPARE FOR PDF OUTPUT ---
-    
-    // 1. Clear all output buffers to prevent conflicts
+    // --- FIX FOR LARGE FILES: INCREASE LIMITS ---
+    @set_time_limit(600); // 10 minutes max for slow connections
+    if(function_exists('ini_set')) {
+        ini_set('memory_limit', '512M'); // Ensure server has room to stream
+    }
+
+    // --- PREPARE FOR OUTPUT ---
     while ( ob_get_level() > 0 ) {
         ob_end_clean();
     }
 
-    // 2. Remove any conflicting headers
     if ( function_exists('header_remove') ) {
         header_remove('Content-Disposition');
         header_remove('Pragma');
         header_remove('Cache-Control');
-        header_remove('Expires');
         header_remove('X-Content-Type-Options');
     }
 
-    // --- SET HEADERS FOR INLINE PDF DISPLAY ---
+    $size = filesize($file_path);
+
+    // --- HEADERS FOR STREAMING ---
     header("Access-Control-Allow-Origin: " . home_url());
     header("Access-Control-Allow-Methods: GET");
-    header( 'Content-Type: application/pdf' );
-    header( 'Content-Disposition: inline; filename="' . basename( $file_path ) . '"' );
-    header( 'Content-Length: ' . filesize( $file_path ) );
-    header( 'Accept-Ranges: bytes' );
-    
-    // Caching headers
-    header( 'Cache-Control: public, max-age=86400' );
-    header( 'Expires: ' . gmdate( 'D, d M Y H:i:s', time() + 86400 ) . ' GMT' );
-    
-    // Security header
-    header( 'X-Content-Type-Options: nosniff' );
+    header('Content-Type: application/pdf');
+    header('Content-Disposition: inline; filename="' . basename($file_path) . '"');
+    header('Accept-Ranges: bytes'); // CRITICAL: Allows browser to request chunks
+    header('Content-Length: ' . $size);
+    header('Cache-Control: public, max-age=86400');
+    header('X-Content-Type-Options: nosniff');
 
-    // Clear system buffers one last time
-    flush();
-    
-    // --- SEND PDF FILE ---
-    $readfile_success = readfile( $file_path );
-    
-    if ($readfile_success === false) {
-        die('Failed to read file.');
+    // --- SMART STREAMING LOGIC ---
+    // This allows the browser to request specific parts of the 80MB file
+    if (isset($_SERVER['HTTP_RANGE'])) {
+        list($a, $range) = explode("=", $_SERVER['HTTP_RANGE'], 2);
+        list($range) = explode(",", $range, 1);
+        list($from, $to) = explode("-", $range, 2);
+        if ($to === "") $to = $size - 1;
+        if ($from === "") $from = 0;
+        
+        $new_length = $to - $from + 1;
+        header("HTTP/1.1 206 Partial Content");
+        header("Content-Range: bytes $from-$to/$size");
+        header("Content-Length: $new_length");
+        
+        $fp = fopen($file_path, "rb");
+        fseek($fp, $from);
+        
+        $buffer = 1024 * 8;
+        while(!feof($fp) && ($p = ftell($fp)) <= $to) {
+            if ($p + $buffer > $to) $buffer = $to - $p + 1;
+            echo fread($fp, $buffer);
+            flush();
+        }
+        fclose($fp);
+    } else {
+        // Normal full file output
+        readfile($file_path);
     }
     
     die();
@@ -1161,6 +1174,7 @@ function mg_catalogue_shortcode( $atts ) {
             ?>
             <script>
             document.addEventListener('DOMContentLoaded', function() {
+                // 1. Wait for PDF.js library to load
                 const checkPdfJs = setInterval(function() {
                     const lib = window['pdfjs-dist/build/pdf'] || window.pdfjsLib;
                     if (lib) {
@@ -1169,6 +1183,7 @@ function mg_catalogue_shortcode( $atts ) {
                     }
                 }, 100);
 
+                // 2. MAIN INITIALIZATION FUNCTION (This was missing!)
                 function initPDF(pdfjs) {
                     pdfjs.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js';
                     
@@ -1178,11 +1193,12 @@ function mg_catalogue_shortcode( $atts ) {
                     const progressBar = document.getElementById('mg-pdf-progress-bar');
                     const percentText = document.getElementById('mg-pdf-percent');
 
-                    // --- SECURE & OPTIMIZED FETCH ---
+                    // Configure loading task for large files (80MB+)
                     const loadingTask = pdfjs.getDocument({
                         url: pdfUrl,
+                        rangeChunkSize: 65536 * 16, 
                         disableAutoFetch: false,
-                        disableStream: false, // Allows the 80MB file to load in pieces
+                        disableStream: false, 
                     });
 
                     // Update Progress Bar
@@ -1195,49 +1211,57 @@ function mg_catalogue_shortcode( $atts ) {
                     };
 
                     loadingTask.promise.then(function(pdfDoc) {
-                        renderPages(pdfDoc);
+                        renderPages(pdfDoc, container, loader);
                     }).catch(function(error) {
-                        loader.innerHTML = '<p style="color:red; padding:20px; text-align:center;">Erreur de chargement : Le fichier est volumineux ou la connexion est instable.<br><small>' + error.message + '</small></p>';
+                        loader.innerHTML = `
+                            <div style="text-align:center; padding:20px;">
+                                <p style="color:#D11D27; font-weight:bold;">Erreur de chargement (Fichier volumineux).</p>
+                                <button onclick="window.location.reload()" style="padding:10px 20px; background:#D11D27; color:white; border:none; border-radius:5px; cursor:pointer;">Réessayer</button>
+                            </div>
+                        `;
                         console.error('PDF Load Error:', error);
                     });
+                }
 
-                    // Function to render all pages sequentially
-                    async function renderPages(pdfDoc) {
-                        for (let num = 1; num <= pdfDoc.numPages; num++) {
+                // 3. PAGE RENDERING FUNCTION (With Centering Fix)
+                async function renderPages(pdfDoc, container, loader) {
+                    for (let num = 1; num <= pdfDoc.numPages; num++) {
+                        try {
                             const page = await pdfDoc.getPage(num);
-                            
-                            // Visual quality scaling
-                            const scale = window.innerWidth < 768 ? 1.2 : 1.8; 
+                            const scale = window.innerWidth < 768 ? 1.0 : 1.5; 
                             const viewport = page.getViewport({scale: scale});
                             
                             const canvas = document.createElement('canvas');
                             const ctx = canvas.getContext('2d');
                             canvas.height = viewport.height;
                             canvas.width = viewport.width;
+
+                            // --- STYLING: CENTER THE PAGES ---
                             canvas.style.display = 'block';
-                            canvas.style.margin = '0 auto 15px auto';
-                            canvas.style.maxWidth = '100%';
+                            canvas.style.margin = '0 auto 20px auto';
+                            canvas.style.maxWidth = '95%';
                             canvas.style.height = 'auto';
-                            canvas.style.boxShadow = '0 2px 5px rgba(0,0,0,0.1)';
+                            canvas.style.boxShadow = '0 4px 10px rgba(0,0,0,0.2)';
 
                             container.appendChild(canvas);
 
-                            const renderContext = { canvasContext: ctx, viewport: viewport };
-                            await page.render(renderContext).promise;
+                            await page.render({ canvasContext: ctx, viewport: viewport }).promise;
 
+                            // Hide loader once the first page appears
                             if (num === 1) {
-                                // Hide loader as soon as page 1 is ready so they can start looking
                                 loader.classList.add('hidden');
                             }
+                        } catch (err) {
+                            console.warn("Render error on page " + num, err);
                         }
                     }
                 }
 
-                // SECURITY: Block common keyboard shortcuts
+                // 4. SECURITY: Block Shortcuts
                 window.addEventListener('keydown', function(e) {
                     if ((e.ctrlKey || e.metaKey) && (e.key === 'p' || e.key === 's' || e.key === 'u')) {
                         e.preventDefault();
-                        alert('Cette action est désactivée pour protéger le contenu.');
+                        alert('Action désactivée.');
                     }
                 });
             });
