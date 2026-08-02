@@ -2920,7 +2920,7 @@ function mg_render_user_tracking_detail( $user_id ) {
     echo '<input type="hidden" name="page" value="mg-users-track" />';
     echo '<input type="hidden" name="user_id" value="' . esc_attr( $user_id ) . '" />';
     echo '<p class="search-box" style="margin:0;">';
-    echo '<input type="search" name="product_s" value="' . esc_attr( $product_search ) . '" placeholder="' . esc_attr__( 'Rechercher un produit consulté…', 'meilleur-gaskets' ) . '" style="min-width:280px;" />';
+    echo '<input type="search" name="product_s" value="' . esc_attr( $product_search ) . '" placeholder="' . esc_attr__( 'Rechercher par nom ou référence…', 'meilleur-gaskets' ) . '" style="min-width:280px;" />';
     echo '&nbsp;<input type="submit" class="button" value="' . esc_attr__( 'Rechercher', 'meilleur-gaskets' ) . '" />';
     if ( '' !== $product_search ) {
         echo '&nbsp;<a href="' . esc_url( $detail_url ) . '" class="button">' . esc_html__( 'Réinitialiser', 'meilleur-gaskets' ) . '</a>';
@@ -2953,16 +2953,21 @@ function mg_render_user_tracking_detail( $user_id ) {
             continue;
         }
 
-        // Filter by product name if a search term was entered
-        if ( '' !== $product_search && false === stripos( $product->get_name(), $product_search ) ) {
-            continue;
+        $reference = function_exists( 'get_field' ) ? get_field( 'reference', $product->get_id() ) : '';
+
+        // Filter by product name OR reference if a search term was entered
+        if ( '' !== $product_search ) {
+            $name_match = false !== stripos( $product->get_name(), $product_search );
+            $ref_match  = $reference && false !== stripos( (string) $reference, $product_search );
+            if ( ! $name_match && ! $ref_match ) {
+                continue;
+            }
         }
 
         $rows_found++;
 
         $thumbnail    = $product->get_image( array( 40, 40 ) ); // Already escaped by WooCommerce core
         $store_url    = get_permalink( $product->get_id() );
-        $reference    = function_exists( 'get_field' ) ? get_field( 'reference', $product->get_id() ) : '';
         $count        = isset( $entry['count'] ) ? absint( $entry['count'] ) : 0;
         $last_visited = isset( $entry['last_visited'] ) ? absint( $entry['last_visited'] ) : 0;
         $last_visited_display = $last_visited ? date_i18n( 'd/m/Y H:i', $last_visited ) : '—';
