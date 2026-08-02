@@ -2677,4 +2677,321 @@ function mg_hide_edit_account_ui_elements() {
     </style>';
 }
 
+
+// =========================================================
+// SECTION 25: USER PRODUCT TRACKING SYSTEM
+// =========================================================
+// Tracks which WooCommerce products logged-in customers have viewed.
+// Stores data in wp_usermeta (key: _mg_visited_products) and exposes
+// an admin screen (under Products > Suivi Utilisateurs) to browse it.
+
+/**
+ * 1. DATA COLLECTION: Record a product view for the current logged-in user
+ * Hooked to: woocommerce_after_single_product (fires once per product page load)
+ */
+add_action( 'woocommerce_after_single_product', 'mg_track_product_visit' );
+function mg_track_product_visit() {
+
+    // Only track logged-in users
+    if ( ! is_user_logged_in() ) {
+        return;
+    }
+
+    global $product;
+    if ( ! $product || ! is_a( $product, 'WC_Product' ) ) {
+        return;
+    }
+
+    $product_id = $product->get_id();
+    if ( ! $product_id ) {
+        return;
+    }
+
+    $user_id = get_current_user_id();
+    $history = get_user_meta( $user_id, '_mg_visited_products', true );
+
+    if ( ! is_array( $history ) ) {
+        $history = array();
+    }
+
+    $now = current_time( 'timestamp' );
+
+    if ( isset( $history[ $product_id ] ) && is_array( $history[ $product_id ] ) ) {
+        // Product already visited: increment count, refresh timestamp
+        $history[ $product_id ]['count'] = absint( $history[ $product_id ]['count'] ) + 1;
+        $history[ $product_id ]['last_visited'] = $now;
+    } else {
+        // First visit for this product
+        $history[ $product_id ] = array(
+            'product_id'   => $product_id,
+            'count'        => 1,
+            'last_visited' => $now,
+        );
+    }
+
+    // Sort by most recently visited first
+    uasort( $history, function( $a, $b ) {
+        return $b['last_visited'] <=> $a['last_visited'];
+    } );
+
+    // Performance: cap history to the 50 most recently visited products
+    if ( count( $history ) > 50 ) {
+        $history = array_slice( $history, 0, 50, true );
+    }
+
+    update_user_meta( $user_id, '_mg_visited_products', $history );
+}
+
+/**
+ * 2. ADMIN MENU: Add "Suivi Utilisateurs" submenu under WooCommerce Products
+ * Visible to anyone who can already view/manage the Products screen itself
+ * (i.e. everyone with wp-admin access except the "customer" role, which has
+ * no product capabilities). Gated on 'edit_products' rather than hardcoded
+ * role names — this is the same capability WordPress already uses to decide
+ * whether a role can see the Products parent menu, so our submenu can never
+ * end up mismatched with it (which is what hid this tab for product_manager
+ * when we gated on 'read' instead).
+ * Hooked to: admin_menu
+ */
+add_action( 'admin_menu', 'mg_register_user_tracking_menu' );
+function mg_register_user_tracking_menu() {
+
+    if ( ! mg_user_tracking_can_access() ) {
+        return;
+    }
+
+    add_submenu_page(
+        'edit.php?post_type=product',
+        __( 'Suivi Utilisateurs', 'meilleur-gaskets' ),
+        __( 'Suivi Utilisateurs', 'meilleur-gaskets' ),
+        'edit_products',
+        'mg-users-track',
+        'mg_render_user_tracking_page'
+    );
+}
+
+/**
+ * Helper: Check if the current user is allowed to view the tracking screen.
+ * Anyone who can manage products (i.e. everyone except "customer") qualifies.
+ */
+function mg_user_tracking_can_access() {
+    return current_user_can( 'edit_products' );
+}
+
+/**
+ * 3. ADMIN PAGE ROUTER: Decide between the users list and a single user's history
+ */
+function mg_render_user_tracking_page() {
+
+    // Defense in depth: re-check access even though the menu is already gated
+    if ( ! current_user_can( 'edit_products' ) ) {
+        wp_die( esc_html__( 'Vous n\'avez pas la permission d\'accéder à cette page.', 'meilleur-gaskets' ) );
+    }
+
+    $user_id = isset( $_GET['user_id'] ) ? absint( $_GET['user_id'] ) : 0;
+
+    echo '<div class="wrap">';
+
+    if ( $user_id > 0 ) {
+        mg_render_user_tracking_detail( $user_id );
+    } else {
+        mg_render_user_tracking_list();
+    }
+
+    echo '</div>';
+}
+
+/**
+ * 3a. MAIN VIEW: List all users with the "customer" role, with a search box
+ * Search matches against display name, username and email
+ */
+function mg_render_user_tracking_list() {
+
+    echo '<h1>' . esc_html__( 'Suivi Utilisateurs', 'meilleur-gaskets' ) . '</h1>';
+
+    $base_url = admin_url( 'edit.php?post_type=product&page=mg-users-track' );
+    $search   = isset( $_GET['s'] ) ? sanitize_text_field( wp_unslash( $_GET['s'] ) ) : '';
+
+    // --- Search box ---
+    echo '<form method="get" action="' . esc_url( admin_url( 'edit.php' ) ) . '" style="margin:15px 0;">';
+    echo '<input type="hidden" name="post_type" value="product" />';
+    echo '<input type="hidden" name="page" value="mg-users-track" />';
+    echo '<p class="search-box" style="margin:0;">';
+    echo '<input type="search" name="s" value="' . esc_attr( $search ) . '" placeholder="' . esc_attr__( 'Rechercher un utilisateur (nom ou email)…', 'meilleur-gaskets' ) . '" style="min-width:280px;" />';
+    echo '&nbsp;<input type="submit" class="button" value="' . esc_attr__( 'Rechercher', 'meilleur-gaskets' ) . '" />';
+    if ( '' !== $search ) {
+        echo '&nbsp;<a href="' . esc_url( $base_url ) . '" class="button">' . esc_html__( 'Réinitialiser', 'meilleur-gaskets' ) . '</a>';
+    }
+    echo '</p>';
+    echo '</form>';
+
+    $query_args = array(
+        'role'    => 'customer',
+        'orderby' => 'display_name',
+        'order'   => 'ASC',
+    );
+
+    if ( '' !== $search ) {
+        $query_args['search']         = '*' . $search . '*';
+        $query_args['search_columns'] = array( 'user_login', 'user_email', 'display_name' );
+    }
+
+    $customers = get_users( $query_args );
+
+    if ( empty( $customers ) ) {
+        if ( '' !== $search ) {
+            echo '<p>' . sprintf(
+                /* translators: %s: search term */
+                esc_html__( 'Aucun client trouvé pour "%s".', 'meilleur-gaskets' ),
+                esc_html( $search )
+            ) . '</p>';
+        } else {
+            echo '<p>' . esc_html__( 'Aucun client trouvé.', 'meilleur-gaskets' ) . '</p>';
+        }
+        return;
+    }
+
+    echo '<table class="wp-list-table widefat fixed striped">';
+    echo '<thead><tr>';
+    echo '<th>' . esc_html__( 'Nom', 'meilleur-gaskets' ) . '</th>';
+    echo '<th>' . esc_html__( 'Email', 'meilleur-gaskets' ) . '</th>';
+    echo '<th>' . esc_html__( 'Action', 'meilleur-gaskets' ) . '</th>';
+    echo '</tr></thead>';
+    echo '<tbody>';
+
+    foreach ( $customers as $customer ) {
+
+        $detail_url = add_query_arg( 'user_id', $customer->ID, $base_url );
+
+        echo '<tr>';
+        echo '<td>' . esc_html( $customer->display_name ) . '</td>';
+        echo '<td>' . esc_html( $customer->user_email ) . '</td>';
+        echo '<td><a href="' . esc_url( $detail_url ) . '" class="button button-secondary">' . esc_html__( 'View History', 'meilleur-gaskets' ) . '</a></td>';
+        echo '</tr>';
+    }
+
+    echo '</tbody>';
+    echo '</table>';
+}
+
+/**
+ * 3b. DETAIL VIEW: Show a single user's product visit history, with a search box
+ * Search matches against the visited product's title
+ */
+function mg_render_user_tracking_detail( $user_id ) {
+
+    $user = get_userdata( $user_id );
+
+    $back_url = admin_url( 'edit.php?post_type=product&page=mg-users-track' );
+
+    if ( ! $user ) {
+        echo '<h1>' . esc_html__( 'Suivi Utilisateurs', 'meilleur-gaskets' ) . '</h1>';
+        echo '<p>' . esc_html__( 'Utilisateur introuvable.', 'meilleur-gaskets' ) . '</p>';
+        echo '<a href="' . esc_url( $back_url ) . '" class="button">' . esc_html__( '&larr; Back to Users', 'meilleur-gaskets' ) . '</a>';
+        return;
+    }
+
+    echo '<h1>' . sprintf(
+        /* translators: %s: user display name */
+        esc_html__( 'Historique de %s', 'meilleur-gaskets' ),
+        esc_html( $user->display_name )
+    ) . '</h1>';
+
+    echo '<p><a href="' . esc_url( $back_url ) . '" class="button">' . esc_html__( '&larr; Back to Users', 'meilleur-gaskets' ) . '</a></p>';
+
+    $history = get_user_meta( $user_id, '_mg_visited_products', true );
+
+    if ( empty( $history ) || ! is_array( $history ) ) {
+        echo '<p>' . esc_html__( 'Aucun produit consulté pour le moment.', 'meilleur-gaskets' ) . '</p>';
+        return;
+    }
+
+    // Ensure most recently visited products show first
+    uasort( $history, function( $a, $b ) {
+        return $b['last_visited'] <=> $a['last_visited'];
+    } );
+
+    $product_search = isset( $_GET['product_s'] ) ? sanitize_text_field( wp_unslash( $_GET['product_s'] ) ) : '';
+    $detail_url      = add_query_arg( 'user_id', $user_id, $back_url );
+
+    // --- Search box (product name) ---
+    echo '<form method="get" action="' . esc_url( admin_url( 'edit.php' ) ) . '" style="margin:15px 0;">';
+    echo '<input type="hidden" name="post_type" value="product" />';
+    echo '<input type="hidden" name="page" value="mg-users-track" />';
+    echo '<input type="hidden" name="user_id" value="' . esc_attr( $user_id ) . '" />';
+    echo '<p class="search-box" style="margin:0;">';
+    echo '<input type="search" name="product_s" value="' . esc_attr( $product_search ) . '" placeholder="' . esc_attr__( 'Rechercher un produit consulté…', 'meilleur-gaskets' ) . '" style="min-width:280px;" />';
+    echo '&nbsp;<input type="submit" class="button" value="' . esc_attr__( 'Rechercher', 'meilleur-gaskets' ) . '" />';
+    if ( '' !== $product_search ) {
+        echo '&nbsp;<a href="' . esc_url( $detail_url ) . '" class="button">' . esc_html__( 'Réinitialiser', 'meilleur-gaskets' ) . '</a>';
+    }
+    echo '</p>';
+    echo '</form>';
+
+    echo '<table class="wp-list-table widefat fixed striped">';
+    echo '<thead><tr>';
+    echo '<th style="width:80px;">' . esc_html__( 'Image', 'meilleur-gaskets' ) . '</th>';
+    echo '<th>' . esc_html__( 'Produit', 'meilleur-gaskets' ) . '</th>';
+    echo '<th>' . esc_html__( 'Référence', 'meilleur-gaskets' ) . '</th>';
+    echo '<th>' . esc_html__( 'Nombre de visites', 'meilleur-gaskets' ) . '</th>';
+    echo '<th>' . esc_html__( 'Dernière visite', 'meilleur-gaskets' ) . '</th>';
+    echo '</tr></thead>';
+    echo '<tbody>';
+
+    $rows_found = 0;
+
+    foreach ( $history as $entry ) {
+
+        if ( empty( $entry['product_id'] ) ) {
+            continue;
+        }
+
+        $product = wc_get_product( $entry['product_id'] );
+
+        // Skip entries whose product has been deleted
+        if ( ! $product ) {
+            continue;
+        }
+
+        // Filter by product name if a search term was entered
+        if ( '' !== $product_search && false === stripos( $product->get_name(), $product_search ) ) {
+            continue;
+        }
+
+        $rows_found++;
+
+        $thumbnail    = $product->get_image( array( 40, 40 ) ); // Already escaped by WooCommerce core
+        $store_url    = get_permalink( $product->get_id() );
+        $reference    = function_exists( 'get_field' ) ? get_field( 'reference', $product->get_id() ) : '';
+        $count        = isset( $entry['count'] ) ? absint( $entry['count'] ) : 0;
+        $last_visited = isset( $entry['last_visited'] ) ? absint( $entry['last_visited'] ) : 0;
+        $last_visited_display = $last_visited ? date_i18n( 'd/m/Y H:i', $last_visited ) : '—';
+
+        echo '<tr>';
+        echo '<td>' . $thumbnail . '</td>';
+        echo '<td>';
+        if ( $store_url ) {
+            echo '<a href="' . esc_url( $store_url ) . '" target="_blank" rel="noopener noreferrer">' . esc_html( $product->get_name() ) . '</a>';
+        } else {
+            echo esc_html( $product->get_name() );
+        }
+        echo '</td>';
+        echo '<td>' . ( $reference ? esc_html( $reference ) : '—' ) . '</td>';
+        echo '<td>' . esc_html( $count ) . '</td>';
+        echo '<td>' . esc_html( $last_visited_display ) . '</td>';
+        echo '</tr>';
+    }
+
+    echo '</tbody>';
+    echo '</table>';
+
+    if ( 0 === $rows_found && '' !== $product_search ) {
+        echo '<p>' . sprintf(
+            /* translators: %s: search term */
+            esc_html__( 'Aucun produit consulté ne correspond à "%s".', 'meilleur-gaskets' ),
+            esc_html( $product_search )
+        ) . '</p>';
+    }
+}
+
 ?>
