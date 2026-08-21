@@ -3116,39 +3116,11 @@ function mg_migrate_visited_products_to_table( $force = false ) {
 }
 
 /**
- * 3a. Admin trigger: a "Run Migration" button on the tracking list screen.
- * Handled on `admin_init` so it can `wp_safe_redirect()` before any output
- * has started.
- */
-add_action( 'admin_init', 'mg_handle_migration_button' );
-function mg_handle_migration_button() {
-    if ( ! isset( $_POST['mg_run_migration'] ) ) {
-        return;
-    }
-
-    if ( ! current_user_can( 'manage_options' ) ) {
-        wp_die( esc_html__( "Vous n'avez pas la permission d'effectuer cette action.", 'meilleur-gaskets' ) );
-    }
-
-    check_admin_referer( 'mg_run_migration_action', 'mg_run_migration_nonce' );
-
-    $result = mg_migrate_visited_products_to_table( true );
-
-    $redirect = add_query_arg(
-        array(
-            'post_type'    => 'product',
-            'page'         => 'mg-users-track',
-            'mg_migration' => is_wp_error( $result ) ? 'error' : 'done',
-        ),
-        admin_url( 'edit.php' )
-    );
-
-    wp_safe_redirect( $redirect );
-    exit;
-}
-
-/**
- * 3b. WP-CLI entry point: `wp mg migrate-tracking [--force]`
+ * 3a. WP-CLI entry point: `wp mg migrate-tracking [--force]`
+ * The one-time wp-admin "Run Migration" button has been removed now that
+ * the initial migration is complete; this WP-CLI command is left in place
+ * as a manual fallback (e.g. to resync after a data import) rather than
+ * removing mg_migrate_visited_products_to_table() outright.
  */
 if ( defined( 'WP_CLI' ) && WP_CLI ) {
     WP_CLI::add_command(
@@ -3277,14 +3249,6 @@ function mg_render_user_tracking_page() {
 
     echo '<div class="wrap">';
 
-    if ( isset( $_GET['mg_migration'] ) ) {
-        if ( 'done' === $_GET['mg_migration'] ) {
-            echo '<div class="notice notice-success is-dismissible"><p>' . esc_html__( 'Migration terminée.', 'meilleur-gaskets' ) . '</p></div>';
-        } else {
-            echo '<div class="notice notice-error is-dismissible"><p>' . esc_html__( "La migration a échoué ou n'a pas pu s'exécuter.", 'meilleur-gaskets' ) . '</p></div>';
-        }
-    }
-
     if ( $user_id > 0 ) {
         mg_render_user_tracking_detail( $user_id );
     } else {
@@ -3304,15 +3268,6 @@ function mg_render_user_tracking_list() {
 
     $base_url = admin_url( 'edit.php?post_type=product&page=mg-users-track' );
     $search   = isset( $_GET['s'] ) ? sanitize_text_field( wp_unslash( $_GET['s'] ) ) : '';
-
-    // --- One-time migration button (manage_options only) ---
-    if ( current_user_can( 'manage_options' ) ) {
-        echo '<form method="post" action="' . esc_url( admin_url( 'admin.php' ) ) . '" style="margin:15px 0;">';
-        wp_nonce_field( 'mg_run_migration_action', 'mg_run_migration_nonce' );
-        echo '<input type="hidden" name="mg_run_migration" value="1" />';
-        submit_button( __( 'Migrer l\'ancien historique (usermeta) vers la nouvelle table', 'meilleur-gaskets' ), 'secondary', 'submit', false );
-        echo '</form>';
-    }
 
     // --- Search box ---
     echo '<form method="get" action="' . esc_url( admin_url( 'edit.php' ) ) . '" style="margin:15px 0;">';
@@ -3623,9 +3578,17 @@ function mg_get_top_products_global( $args = array() ) {
     }
 
     if ( '' !== $args['search'] ) {
-        $joins   .= " INNER JOIN {$wpdb->posts} p ON p.ID = s.product_id";
-        $where[]  = 'p.post_title LIKE %s';
-        $params[] = '%' . $wpdb->esc_like( $args['search'] ) . '%';
+        // Match either the product title or the 'reference' ACF field
+        // (same meta_key used elsewhere in this plugin, e.g.
+        // mg_display_product_reference_in_loop()). LEFT JOIN so products
+        // with no reference set still match on title alone.
+        $joins .= " INNER JOIN {$wpdb->posts} p ON p.ID = s.product_id
+                     LEFT JOIN {$wpdb->postmeta} pm_ref ON pm_ref.post_id = s.product_id AND pm_ref.meta_key = 'reference'";
+
+        $like     = '%' . $wpdb->esc_like( $args['search'] ) . '%';
+        $where[]  = '( p.post_title LIKE %s OR pm_ref.meta_value LIKE %s )';
+        $params[] = $like;
+        $params[] = $like;
     }
 
     if ( $args['brand_id'] ) {
@@ -3894,7 +3857,10 @@ function mg_render_popular_filter_form( $base_url, $view, $filters, $extra_field
     echo '<input type="hidden" name="view" value="' . esc_attr( $view ) . '" />';
 
     echo '<p style="margin:0;"><label>' . esc_html__( 'Recherche', 'meilleur-gaskets' ) . '<br/>';
-    echo '<input type="search" name="s" value="' . esc_attr( $filters['search'] ) . '" placeholder="' . esc_attr__( 'Nom…', 'meilleur-gaskets' ) . '" /></label></p>';
+    $search_placeholder = 'products' === $view
+        ? __( 'Nom ou référence…', 'meilleur-gaskets' )
+        : __( 'Nom…', 'meilleur-gaskets' );
+    echo '<input type="search" name="s" value="' . esc_attr( $filters['search'] ) . '" placeholder="' . esc_attr( $search_placeholder ) . '" /></label></p>';
 
     if ( is_callable( $extra_fields_cb ) ) {
         call_user_func( $extra_fields_cb, $filters );
@@ -4025,6 +3991,7 @@ function mg_render_popular_products_view( $base_url ) {
     echo '<thead><tr>';
     echo '<th style="width:80px;">' . esc_html__( 'Image', 'meilleur-gaskets' ) . '</th>';
     echo '<th>' . esc_html__( 'Produit', 'meilleur-gaskets' ) . '</th>';
+    echo '<th>' . esc_html__( 'Référence', 'meilleur-gaskets' ) . '</th>';
     echo '<th>' . esc_html__( 'Marque', 'meilleur-gaskets' ) . '</th>';
     echo '<th>' . esc_html__( 'Visites totales', 'meilleur-gaskets' ) . '</th>';
     echo '<th>' . esc_html__( 'Visiteurs uniques', 'meilleur-gaskets' ) . '</th>';
@@ -4045,6 +4012,8 @@ function mg_render_popular_products_view( $base_url ) {
             }
         }
 
+        $reference = function_exists( 'get_field' ) ? get_field( 'reference', $product->get_id() ) : '';
+
         $thumbnail = $product->get_image( array( 40, 40 ) );
         $store_url = get_permalink( $product->get_id() );
 
@@ -4057,6 +4026,7 @@ function mg_render_popular_products_view( $base_url ) {
             echo esc_html( $product->get_name() );
         }
         echo '</td>';
+        echo '<td>' . ( $reference ? esc_html( $reference ) : '—' ) . '</td>';
         echo '<td>' . esc_html( $brand_name ) . '</td>';
         echo '<td>' . esc_html( number_format_i18n( (int) $row->total_visits ) ) . '</td>';
         echo '<td>' . esc_html( number_format_i18n( (int) $row->unique_visitors ) ) . '</td>';
