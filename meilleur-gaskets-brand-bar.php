@@ -2679,21 +2679,313 @@ function mg_hide_edit_account_ui_elements() {
 
 
 // =========================================================
-// SECTION 25: USER PRODUCT TRACKING SYSTEM
+// SECTION 25: USER PRODUCT TRACKING SYSTEM (v2 - custom table)
 // =========================================================
 // Tracks which WooCommerce products logged-in customers have viewed.
-// Stores data in wp_usermeta (key: _mg_visited_products) and exposes
-// an admin screen (under Products > Suivi Utilisateurs) to browse it.
+//
+// REFACTOR NOTES (moving off wp_usermeta / serialized arrays):
+// - Data now lives in a dedicated table ({$wpdb->prefix}mg_product_tracking)
+//   instead of a serialized array under the `_mg_visited_products` usermeta
+//   key. A serialized-array column has to be fully unserialized, scanned,
+//   re-serialized and rewritten on every single visit, and it can't be
+//   queried, sorted or aggregated by MySQL at all — every "top products" /
+//   "top brands" report had to be computed in PHP after loading each user's
+//   entire history. A relational table with proper indexes lets MySQL do
+//   that work instead, and scales to large histories/large user counts.
+// - Recording a visit no longer happens synchronously on page load (hooked
+//   to `woocommerce_after_single_product`). It happens client-side via
+//   `fetch()` against a REST endpoint, so the write never blocks or delays
+//   rendering the product page for the shopper.
+// - Historical data already stored in `_mg_visited_products` is preserved
+//   via the one-time migration routine below; the usermeta itself is left
+//   in place (not deleted) so nothing is lost if a rollback is ever needed.
 
 /**
- * 1. DATA COLLECTION: Record a product view for the current logged-in user
- * Hooked to: woocommerce_after_single_product (fires once per product page load)
+ * Helper: fully-prefixed name of the custom tracking table.
+ * Centralised here so every query below stays in sync if the table name
+ * ever changes.
  */
-add_action( 'woocommerce_after_single_product', 'mg_track_product_visit' );
-function mg_track_product_visit() {
+function mg_get_tracking_table_name() {
+    global $wpdb;
+    return $wpdb->prefix . 'mg_product_tracking';
+}
 
-    // Only track logged-in users
-    if ( ! is_user_logged_in() ) {
+/**
+ * Helper: fully-prefixed name of the per-product rollup/summary table.
+ * One row per product (not per visit), so admin dashboard "top products" /
+ * "top brands" queries stay fast no matter how large the raw visit table
+ * (mg_get_tracking_table_name()) grows over time.
+ */
+function mg_get_summary_table_name() {
+    global $wpdb;
+    return $wpdb->prefix . 'mg_product_visit_summary';
+}
+
+/**
+ * 1. DATABASE SCHEMA
+ * Creates (or upgrades) the custom tracking table via dbDelta().
+ *
+ * dbDelta() needs the SQL formatted in a very specific way to reliably
+ * detect schema changes: each column/key on its own line, two spaces after
+ * PRIMARY KEY, and no backticks around the table name. See
+ * https://developer.wordpress.org/reference/functions/dbdelta/
+ *
+ * Registered on the activation hook, and also re-run on `plugins_loaded`
+ * whenever the stored schema version doesn't match — dbDelta() is safe to
+ * call repeatedly (it only applies the diff), and this keeps sites that
+ * update the plugin via SVN without deactivating/reactivating it in sync.
+ */
+register_activation_hook( __FILE__, 'mg_create_tracking_table' );
+add_action( 'plugins_loaded', 'mg_maybe_upgrade_tracking_table' );
+
+// v1.1: added mg_product_visit_summary, the per-product rollup table that
+// backs the "Produits Populaires" dashboard (see mg_backfill_summary_table()).
+define( 'MG_TRACKING_DB_VERSION', '1.1' );
+
+function mg_create_tracking_table() {
+    global $wpdb;
+
+    $table_name      = mg_get_tracking_table_name();
+    $summary_table   = mg_get_summary_table_name();
+    $charset_collate = $wpdb->get_charset_collate();
+
+    // dbDelta() accepts multiple CREATE TABLE statements in one string.
+    $sql = "CREATE TABLE {$table_name} (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        user_id BIGINT UNSIGNED NOT NULL,
+        product_id BIGINT UNSIGNED NOT NULL,
+        brand_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+        visit_count INT UNSIGNED NOT NULL DEFAULT 1,
+        last_visited DATETIME NOT NULL,
+        PRIMARY KEY  (id),
+        UNIQUE KEY user_product (user_id, product_id),
+        KEY user_id (user_id),
+        KEY brand_id (brand_id),
+        KEY product_id (product_id)
+    ) {$charset_collate};
+    CREATE TABLE {$summary_table} (
+        product_id BIGINT UNSIGNED NOT NULL,
+        brand_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+        total_visits BIGINT UNSIGNED NOT NULL DEFAULT 0,
+        unique_visitors BIGINT UNSIGNED NOT NULL DEFAULT 0,
+        last_visited DATETIME NOT NULL,
+        PRIMARY KEY  (product_id),
+        KEY brand_id (brand_id),
+        KEY total_visits (total_visits)
+    ) {$charset_collate};";
+
+    require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+    dbDelta( $sql );
+
+    // Recompute the summary table from whatever is already in the raw
+    // table. Cheap on a fresh install (raw table is empty) and, on sites
+    // upgrading from v1.0, this is what backfills summary rows for visits
+    // that were recorded before the summary table existed. Safe to re-run:
+    // it's an authoritative recompute (ON DUPLICATE KEY UPDATE), not an
+    // increment, so running it twice can't double-count anything.
+    mg_backfill_summary_table();
+
+    update_option( 'mg_tracking_db_version', MG_TRACKING_DB_VERSION );
+}
+
+function mg_maybe_upgrade_tracking_table() {
+    if ( get_option( 'mg_tracking_db_version' ) !== MG_TRACKING_DB_VERSION ) {
+        mg_create_tracking_table();
+    }
+}
+
+/**
+ * Recompute mg_product_visit_summary from mg_product_tracking in one pass.
+ * Runs automatically on activation/schema upgrade; safe to call any time
+ * (e.g. from WP-CLI) if the two tables ever need to be resynced.
+ */
+function mg_backfill_summary_table() {
+    global $wpdb;
+
+    $raw_table     = mg_get_tracking_table_name();
+    $summary_table = mg_get_summary_table_name();
+
+    $wpdb->query(
+        "INSERT INTO {$summary_table} (product_id, brand_id, total_visits, unique_visitors, last_visited)
+         SELECT product_id, brand_id, SUM(visit_count), COUNT(DISTINCT user_id), MAX(last_visited)
+         FROM {$raw_table}
+         GROUP BY product_id
+         ON DUPLICATE KEY UPDATE
+            brand_id        = VALUES(brand_id),
+            total_visits    = VALUES(total_visits),
+            unique_visitors = VALUES(unique_visitors),
+            last_visited    = VALUES(last_visited)"
+    );
+}
+
+/**
+ * Shared write path for recording a product visit — used by both the live
+ * REST endpoint (one visit at a time) and the historical migration (which
+ * can import a visit_count greater than 1 from old usermeta data).
+ *
+ * No cap on how many distinct products a user can accumulate here: unlike
+ * the old serialized-array approach, each visit is a single indexed UPSERT,
+ * so it costs the same whether this is a user's 5th product or their 5,000th.
+ *
+ * @param int    $user_id
+ * @param int    $product_id
+ * @param int    $brand_id
+ * @param int    $visit_delta      How many visits to add (1 for a live visit).
+ * @param string $mysql_timestamp  MySQL datetime string; defaults to now.
+ * @return bool Whether this (user_id, product_id) pair was newly created
+ *              (i.e. counts as a "unique visitor" of this product).
+ */
+function mg_record_product_visit( $user_id, $product_id, $brand_id, $visit_delta = 1, $mysql_timestamp = null ) {
+    global $wpdb;
+
+    $user_id         = absint( $user_id );
+    $product_id      = absint( $product_id );
+    $brand_id        = absint( $brand_id );
+    $visit_delta     = max( 1, absint( $visit_delta ) );
+    $mysql_timestamp = $mysql_timestamp ? $mysql_timestamp : current_time( 'mysql' );
+
+    $raw_table = mg_get_tracking_table_name();
+
+    // MySQL's affected-rows count for INSERT ... ON DUPLICATE KEY UPDATE
+    // tells us, for free, whether this (user, product) pair is brand new
+    // (1 row affected = INSERT) or already existed (2 rows affected =
+    // UPDATE) — no extra SELECT needed just to know whether to count this
+    // as a new "unique visitor" of the product.
+    $affected = $wpdb->query(
+        $wpdb->prepare(
+            "INSERT INTO {$raw_table} (user_id, product_id, brand_id, visit_count, last_visited)
+             VALUES (%d, %d, %d, %d, %s)
+             ON DUPLICATE KEY UPDATE
+                visit_count   = visit_count + VALUES(visit_count),
+                brand_id      = VALUES(brand_id),
+                last_visited  = GREATEST(last_visited, VALUES(last_visited))",
+            $user_id,
+            $product_id,
+            $brand_id,
+            $visit_delta,
+            $mysql_timestamp
+        )
+    );
+
+    $is_new_visitor = ( 1 === (int) $affected );
+
+    $summary_table = mg_get_summary_table_name();
+
+    // Second, tiny upsert against the one-row-per-product summary table.
+    $wpdb->query(
+        $wpdb->prepare(
+            "INSERT INTO {$summary_table} (product_id, brand_id, total_visits, unique_visitors, last_visited)
+             VALUES (%d, %d, %d, %d, %s)
+             ON DUPLICATE KEY UPDATE
+                total_visits    = total_visits + VALUES(total_visits),
+                unique_visitors = unique_visitors + %d,
+                brand_id        = VALUES(brand_id),
+                last_visited    = GREATEST(last_visited, VALUES(last_visited))",
+            $product_id,
+            $brand_id,
+            $visit_delta,
+            1, // first-ever row for this product = definitionally 1 unique visitor so far
+            $mysql_timestamp,
+            $is_new_visitor ? 1 : 0
+        )
+    );
+
+    return $is_new_visitor;
+}
+
+/**
+ * 2. ASYNCHRONOUS TRACKING — REST endpoint
+ * A small, purpose-built endpoint that only does one thing: record that the
+ * current user viewed one product. Namespaced under `meilleur-gaskets/v1`
+ * so it can't collide with other plugins.
+ */
+add_action( 'rest_api_init', 'mg_register_tracking_rest_route' );
+function mg_register_tracking_rest_route() {
+    register_rest_route(
+        'meilleur-gaskets/v1',
+        '/track',
+        array(
+            'methods'             => WP_REST_Server::CREATABLE, // POST
+            'callback'            => 'mg_rest_track_visit',
+            'permission_callback' => 'mg_rest_track_permission_check',
+            'args'                => array(
+                'product_id' => array(
+                    'required'          => true,
+                    'type'              => 'integer',
+                    'sanitize_callback' => 'absint',
+                    'validate_callback' => function ( $value ) {
+                        return is_numeric( $value ) && absint( $value ) > 0;
+                    },
+                ),
+            ),
+        )
+    );
+}
+
+/**
+ * Permission check for the tracking endpoint.
+ *
+ * Security note on nonces: for cookie-authenticated REST requests, WordPress
+ * core already verifies the `X-WP-Nonce` header against the 'wp_rest' action
+ * before this callback ever runs (see `rest_cookie_check_errors()` in
+ * wp-includes/rest-api.php) — a missing/invalid nonce gets rejected with a
+ * 403 automatically, as long as the request goes through a logged-in
+ * session cookie, which is the case here. We only need to additionally
+ * confirm there IS a logged-in user, since anonymous visits aren't tracked.
+ */
+function mg_rest_track_permission_check( WP_REST_Request $request ) {
+    return is_user_logged_in();
+}
+
+/**
+ * REST callback: upsert one visit row for the current user/product.
+ */
+function mg_rest_track_visit( WP_REST_Request $request ) {
+    global $wpdb;
+
+    $user_id    = get_current_user_id();
+    $product_id = absint( $request->get_param( 'product_id' ) );
+
+    if ( ! $user_id || ! $product_id ) {
+        return new WP_Error( 'mg_invalid_request', __( 'Invalid tracking payload.', 'meilleur-gaskets' ), array( 'status' => 400 ) );
+    }
+
+    // Never trust the ID blindly: confirm it's a real, published WooCommerce
+    // product before writing anything.
+    $product = wc_get_product( $product_id );
+    if ( ! $product || ! is_a( $product, 'WC_Product' ) || 'publish' !== get_post_status( $product_id ) ) {
+        return new WP_Error( 'mg_invalid_product', __( 'Unknown product.', 'meilleur-gaskets' ), array( 'status' => 404 ) );
+    }
+
+    // The brand is derived server-side from the product's own taxonomy
+    // terms rather than accepted from the client. Trusting a client-supplied
+    // brand_id would let anyone attribute visits to an arbitrary brand.
+    $brand_id = 0;
+    $terms    = wp_get_post_terms( $product_id, 'pwb-brand', array( 'fields' => 'ids' ) );
+    if ( ! is_wp_error( $terms ) && ! empty( $terms ) ) {
+        $brand_id = absint( $terms[0] );
+    }
+
+    // Shared write path: upserts both the per-user row and the per-product
+    // summary row that the "Produits Populaires" dashboard reads from.
+    mg_record_product_visit( $user_id, $product_id, $brand_id, 1 );
+
+    if ( $wpdb->last_error ) {
+        return new WP_Error( 'mg_db_error', __( 'Could not record visit.', 'meilleur-gaskets' ), array( 'status' => 500 ) );
+    }
+
+    return new WP_REST_Response( array( 'tracked' => true ), 200 );
+}
+
+/**
+ * 2b. ASYNCHRONOUS TRACKING — front-end JavaScript
+ * Fires the tracking request from the browser after the single product page
+ * has already rendered, so it can never delay or block page load the way
+ * the old server-side `woocommerce_after_single_product` hook could.
+ */
+add_action( 'wp_enqueue_scripts', 'mg_enqueue_tracking_script' );
+function mg_enqueue_tracking_script() {
+    if ( ! is_product() || ! is_user_logged_in() ) {
         return;
     }
 
@@ -2702,55 +2994,248 @@ function mg_track_product_visit() {
         return;
     }
 
-    $product_id = $product->get_id();
-    if ( ! $product_id ) {
+    // This snippet is tiny and page-specific, so it's added as inline JS
+    // rather than shipping a separate .js asset. wp_register_script() with
+    // an empty src just gives wp_add_inline_script() a handle to attach to.
+    wp_register_script( 'mg-product-tracking', '', array(), '1.0', true );
+    wp_enqueue_script( 'mg-product-tracking' );
+
+    wp_localize_script(
+        'mg-product-tracking',
+        'mgTracking',
+        array(
+            'restUrl'   => esc_url_raw( rest_url( 'meilleur-gaskets/v1/track' ) ),
+            'nonce'     => wp_create_nonce( 'wp_rest' ),
+            'productId' => $product->get_id(),
+        )
+    );
+
+    $inline_js = <<<'JS'
+( function () {
+    if ( ! window.mgTracking || ! window.fetch ) {
         return;
     }
 
-    $user_id = get_current_user_id();
-    $history = get_user_meta( $user_id, '_mg_visited_products', true );
+    // Fire-and-forget: `keepalive: true` lets the browser finish sending
+    // this request even if the shopper navigates away immediately, and
+    // fetch() never blocks page rendering the way a synchronous request
+    // (or the old PHP hook) did. Failures are swallowed on purpose —
+    // tracking must never surface an error or affect the shopping experience.
+    window.fetch( mgTracking.restUrl, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-WP-Nonce': mgTracking.nonce
+        },
+        credentials: 'same-origin',
+        keepalive: true,
+        body: JSON.stringify( { product_id: mgTracking.productId } )
+    } ).catch( function () {} );
+} )();
+JS;
 
-    if ( ! is_array( $history ) ) {
-        $history = array();
-    }
-
-    $now = current_time( 'timestamp' );
-
-    if ( isset( $history[ $product_id ] ) && is_array( $history[ $product_id ] ) ) {
-        // Product already visited: increment count, refresh timestamp
-        $history[ $product_id ]['count'] = absint( $history[ $product_id ]['count'] ) + 1;
-        $history[ $product_id ]['last_visited'] = $now;
-    } else {
-        // First visit for this product
-        $history[ $product_id ] = array(
-            'product_id'   => $product_id,
-            'count'        => 1,
-            'last_visited' => $now,
-        );
-    }
-
-    // Sort by most recently visited first
-    uasort( $history, function( $a, $b ) {
-        return $b['last_visited'] <=> $a['last_visited'];
-    } );
-
-    // Performance: cap history to the 50 most recently visited products
-    if ( count( $history ) > 50 ) {
-        $history = array_slice( $history, 0, 50, true );
-    }
-
-    update_user_meta( $user_id, '_mg_visited_products', $history );
+    wp_add_inline_script( 'mg-product-tracking', $inline_js );
 }
 
 /**
- * 2. ADMIN MENU: Add "Suivi Utilisateurs" submenu under WooCommerce Products
+ * 3. DATA MIGRATION — one-time usermeta -> custom table
+ * Reads every user's `_mg_visited_products` history and upserts it into the
+ * new table. Idempotent by design (safe to re-run): rows are merged via the
+ * same UNIQUE KEY (user_id, product_id) used by the REST endpoint, and
+ * counts/timestamps are only ever moved forward (GREATEST()), so re-running
+ * it can't clobber real visits recorded after a first migration.
+ *
+ * The old usermeta is intentionally left untouched — this is an additive
+ * copy, not a destructive move, so there's a clean rollback path if needed.
+ *
+ * @param bool $force Bypass the "already migrated" guard (used by WP-CLI --force).
+ * @return array|WP_Error
+ */
+function mg_migrate_visited_products_to_table( $force = false ) {
+    // Callable either from wp-admin (capability check) or WP-CLI (trusted
+    // execution context, no user session to check capabilities against).
+    $is_cli = defined( 'WP_CLI' ) && WP_CLI;
+    if ( ! $is_cli && ! current_user_can( 'manage_options' ) ) {
+        return new WP_Error( 'mg_forbidden', __( 'Insufficient permissions.', 'meilleur-gaskets' ) );
+    }
+
+    if ( ! $force && get_option( 'mg_tracking_migration_done' ) ) {
+        return array(
+            'skipped' => true,
+            'reason'  => 'Migration already completed. Pass $force / --force to re-run.',
+        );
+    }
+
+    // Only fetch the IDs of users that actually have tracking history —
+    // avoids loading every single user on large sites.
+    $user_ids = get_users(
+        array(
+            'meta_key' => '_mg_visited_products', // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key
+            'fields'   => 'ID',
+        )
+    );
+
+    $migrated_rows = 0;
+
+    foreach ( $user_ids as $user_id ) {
+        $history = get_user_meta( $user_id, '_mg_visited_products', true );
+
+        if ( empty( $history ) || ! is_array( $history ) ) {
+            continue;
+        }
+
+        foreach ( $history as $entry ) {
+            if ( empty( $entry['product_id'] ) ) {
+                continue;
+            }
+
+            $product_id   = absint( $entry['product_id'] );
+            $count        = isset( $entry['count'] ) ? absint( $entry['count'] ) : 1;
+            $timestamp    = isset( $entry['last_visited'] ) ? absint( $entry['last_visited'] ) : time();
+            $last_visited = gmdate( 'Y-m-d H:i:s', $timestamp );
+
+            $brand_id = 0;
+            $terms    = wp_get_post_terms( $product_id, 'pwb-brand', array( 'fields' => 'ids' ) );
+            if ( ! is_wp_error( $terms ) && ! empty( $terms ) ) {
+                $brand_id = absint( $terms[0] );
+            }
+
+            // Same write path the REST endpoint uses, so migrated history
+            // populates the summary table too, not just the raw table.
+            mg_record_product_visit( $user_id, $product_id, $brand_id, $count, $last_visited );
+            $migrated_rows++;
+        }
+    }
+
+    update_option( 'mg_tracking_migration_done', current_time( 'mysql' ) );
+
+    return array(
+        'skipped' => false,
+        'rows'    => $migrated_rows,
+    );
+}
+
+/**
+ * 3a. Admin trigger: a "Run Migration" button on the tracking list screen.
+ * Handled on `admin_init` so it can `wp_safe_redirect()` before any output
+ * has started.
+ */
+add_action( 'admin_init', 'mg_handle_migration_button' );
+function mg_handle_migration_button() {
+    if ( ! isset( $_POST['mg_run_migration'] ) ) {
+        return;
+    }
+
+    if ( ! current_user_can( 'manage_options' ) ) {
+        wp_die( esc_html__( "Vous n'avez pas la permission d'effectuer cette action.", 'meilleur-gaskets' ) );
+    }
+
+    check_admin_referer( 'mg_run_migration_action', 'mg_run_migration_nonce' );
+
+    $result = mg_migrate_visited_products_to_table( true );
+
+    $redirect = add_query_arg(
+        array(
+            'post_type'    => 'product',
+            'page'         => 'mg-users-track',
+            'mg_migration' => is_wp_error( $result ) ? 'error' : 'done',
+        ),
+        admin_url( 'edit.php' )
+    );
+
+    wp_safe_redirect( $redirect );
+    exit;
+}
+
+/**
+ * 3b. WP-CLI entry point: `wp mg migrate-tracking [--force]`
+ */
+if ( defined( 'WP_CLI' ) && WP_CLI ) {
+    WP_CLI::add_command(
+        'mg migrate-tracking',
+        function ( $args, $assoc_args ) {
+            $force  = isset( $assoc_args['force'] );
+            $result = mg_migrate_visited_products_to_table( $force );
+
+            if ( is_wp_error( $result ) ) {
+                WP_CLI::error( $result->get_error_message() );
+            }
+
+            if ( ! empty( $result['skipped'] ) ) {
+                WP_CLI::warning( $result['reason'] );
+                return;
+            }
+
+            WP_CLI::success( sprintf( 'Migrated/updated %d visit record(s).', $result['rows'] ) );
+        }
+    );
+}
+
+/**
+ * 4. DATA RETRIEVAL FOUNDATION
+ * Core $wpdb queries for "top visited products" and "top visited brands"
+ * for a given user — the building blocks for the future Elementor widgets
+ * and admin dashboard datatable. Both are single indexed queries; MySQL
+ * does the sorting/aggregation instead of PHP looping over a full history.
+ */
+
+/**
+ * Top products a user has visited, most-visited first.
+ *
+ * @param int $user_id
+ * @param int $limit
+ * @return array Rows with ->product_id, ->brand_id, ->visit_count, ->last_visited
+ */
+function mg_get_top_visited_products( $user_id, $limit = 10 ) {
+    global $wpdb;
+    $table = mg_get_tracking_table_name();
+
+    return $wpdb->get_results(
+        $wpdb->prepare(
+            "SELECT product_id, brand_id, visit_count, last_visited
+             FROM {$table}
+             WHERE user_id = %d
+             ORDER BY visit_count DESC, last_visited DESC
+             LIMIT %d",
+            absint( $user_id ),
+            absint( $limit )
+        )
+    );
+}
+
+/**
+ * Top brands a user has visited, ranked by total visits across all of that
+ * brand's products (visit_count summed, grouped by brand_id).
+ *
+ * @param int $user_id
+ * @param int $limit
+ * @return array Rows with ->brand_id, ->total_visits, ->last_visited
+ */
+function mg_get_top_visited_brands( $user_id, $limit = 10 ) {
+    global $wpdb;
+    $table = mg_get_tracking_table_name();
+
+    return $wpdb->get_results(
+        $wpdb->prepare(
+            "SELECT brand_id, SUM(visit_count) AS total_visits, MAX(last_visited) AS last_visited
+             FROM {$table}
+             WHERE user_id = %d AND brand_id > 0
+             GROUP BY brand_id
+             ORDER BY total_visits DESC, last_visited DESC
+             LIMIT %d",
+            absint( $user_id ),
+            absint( $limit )
+        )
+    );
+}
+
+/**
+ * 5. ADMIN MENU: "Suivi Utilisateurs" submenu under WooCommerce Products
  * Visible to anyone who can already view/manage the Products screen itself
  * (i.e. everyone with wp-admin access except the "customer" role, which has
  * no product capabilities). Gated on 'edit_products' rather than hardcoded
  * role names — this is the same capability WordPress already uses to decide
- * whether a role can see the Products parent menu, so our submenu can never
- * end up mismatched with it (which is what hid this tab for product_manager
- * when we gated on 'read' instead).
+ * whether a role can see the Products parent menu.
  * Hooked to: admin_menu
  */
 add_action( 'admin_menu', 'mg_register_user_tracking_menu' );
@@ -2779,7 +3264,7 @@ function mg_user_tracking_can_access() {
 }
 
 /**
- * 3. ADMIN PAGE ROUTER: Decide between the users list and a single user's history
+ * 6. ADMIN PAGE ROUTER: Decide between the users list and a single user's history
  */
 function mg_render_user_tracking_page() {
 
@@ -2792,6 +3277,14 @@ function mg_render_user_tracking_page() {
 
     echo '<div class="wrap">';
 
+    if ( isset( $_GET['mg_migration'] ) ) {
+        if ( 'done' === $_GET['mg_migration'] ) {
+            echo '<div class="notice notice-success is-dismissible"><p>' . esc_html__( 'Migration terminée.', 'meilleur-gaskets' ) . '</p></div>';
+        } else {
+            echo '<div class="notice notice-error is-dismissible"><p>' . esc_html__( "La migration a échoué ou n'a pas pu s'exécuter.", 'meilleur-gaskets' ) . '</p></div>';
+        }
+    }
+
     if ( $user_id > 0 ) {
         mg_render_user_tracking_detail( $user_id );
     } else {
@@ -2802,7 +3295,7 @@ function mg_render_user_tracking_page() {
 }
 
 /**
- * 3a. MAIN VIEW: List all users with the "customer" role, with a search box
+ * 6a. MAIN VIEW: List all users with the "customer" role, with a search box
  * Search matches against display name, username and email
  */
 function mg_render_user_tracking_list() {
@@ -2811,6 +3304,15 @@ function mg_render_user_tracking_list() {
 
     $base_url = admin_url( 'edit.php?post_type=product&page=mg-users-track' );
     $search   = isset( $_GET['s'] ) ? sanitize_text_field( wp_unslash( $_GET['s'] ) ) : '';
+
+    // --- One-time migration button (manage_options only) ---
+    if ( current_user_can( 'manage_options' ) ) {
+        echo '<form method="post" action="' . esc_url( admin_url( 'admin.php' ) ) . '" style="margin:15px 0;">';
+        wp_nonce_field( 'mg_run_migration_action', 'mg_run_migration_nonce' );
+        echo '<input type="hidden" name="mg_run_migration" value="1" />';
+        submit_button( __( 'Migrer l\'ancien historique (usermeta) vers la nouvelle table', 'meilleur-gaskets' ), 'secondary', 'submit', false );
+        echo '</form>';
+    }
 
     // --- Search box ---
     echo '<form method="get" action="' . esc_url( admin_url( 'edit.php' ) ) . '" style="margin:15px 0;">';
@@ -2875,10 +3377,15 @@ function mg_render_user_tracking_list() {
 }
 
 /**
- * 3b. DETAIL VIEW: Show a single user's product visit history, with a search box
- * Search matches against the visited product's title
+ * 6b. DETAIL VIEW: Show a single user's product visit history, with a search box
+ * Search matches against the visited product's title.
+ * Now reads from the custom table instead of the `_mg_visited_products`
+ * usermeta — the SQL does the "most recent first" ordering, so there's no
+ * PHP-side uasort() over the whole history any more.
  */
 function mg_render_user_tracking_detail( $user_id ) {
+
+    global $wpdb;
 
     $user = get_userdata( $user_id );
 
@@ -2899,20 +3406,25 @@ function mg_render_user_tracking_detail( $user_id ) {
 
     echo '<p><a href="' . esc_url( $back_url ) . '" class="button">' . esc_html__( '&larr; Back to Users', 'meilleur-gaskets' ) . '</a></p>';
 
-    $history = get_user_meta( $user_id, '_mg_visited_products', true );
+    $table = mg_get_tracking_table_name();
 
-    if ( empty( $history ) || ! is_array( $history ) ) {
+    $history = $wpdb->get_results(
+        $wpdb->prepare(
+            "SELECT product_id, brand_id, visit_count, last_visited
+             FROM {$table}
+             WHERE user_id = %d
+             ORDER BY last_visited DESC",
+            $user_id
+        )
+    );
+
+    if ( empty( $history ) ) {
         echo '<p>' . esc_html__( 'Aucun produit consulté pour le moment.', 'meilleur-gaskets' ) . '</p>';
         return;
     }
 
-    // Ensure most recently visited products show first
-    uasort( $history, function( $a, $b ) {
-        return $b['last_visited'] <=> $a['last_visited'];
-    } );
-
     $product_search = isset( $_GET['product_s'] ) ? sanitize_text_field( wp_unslash( $_GET['product_s'] ) ) : '';
-    $detail_url      = add_query_arg( 'user_id', $user_id, $back_url );
+    $detail_url     = add_query_arg( 'user_id', $user_id, $back_url );
 
     // --- Search box (product name) ---
     echo '<form method="get" action="' . esc_url( admin_url( 'edit.php' ) ) . '" style="margin:15px 0;">';
@@ -2942,11 +3454,11 @@ function mg_render_user_tracking_detail( $user_id ) {
 
     foreach ( $history as $entry ) {
 
-        if ( empty( $entry['product_id'] ) ) {
+        if ( empty( $entry->product_id ) ) {
             continue;
         }
 
-        $product = wc_get_product( $entry['product_id'] );
+        $product = wc_get_product( $entry->product_id );
 
         // Skip entries whose product has been deleted
         if ( ! $product ) {
@@ -2966,11 +3478,10 @@ function mg_render_user_tracking_detail( $user_id ) {
 
         $rows_found++;
 
-        $thumbnail    = $product->get_image( array( 40, 40 ) ); // Already escaped by WooCommerce core
-        $store_url    = get_permalink( $product->get_id() );
-        $count        = isset( $entry['count'] ) ? absint( $entry['count'] ) : 0;
-        $last_visited = isset( $entry['last_visited'] ) ? absint( $entry['last_visited'] ) : 0;
-        $last_visited_display = $last_visited ? date_i18n( 'd/m/Y H:i', $last_visited ) : '—';
+        $thumbnail             = $product->get_image( array( 40, 40 ) ); // Already escaped by WooCommerce core
+        $store_url             = get_permalink( $product->get_id() );
+        $count                 = absint( $entry->visit_count );
+        $last_visited_display  = $entry->last_visited ? date_i18n( 'd/m/Y H:i', strtotime( $entry->last_visited ) ) : '—';
 
         echo '<tr>';
         echo '<td>' . $thumbnail . '</td>';
@@ -2998,5 +3509,615 @@ function mg_render_user_tracking_detail( $user_id ) {
         ) . '</p>';
     }
 }
+
+// =========================================================
+// SECTION 26: GLOBAL POPULARITY DASHBOARD (top products / top brands)
+// =========================================================
+// Site-wide "most visited products" and "most visited brands" reports,
+// with filtering and pagination, for the future Elementor widgets and for
+// the admin dashboard table added below. Reads from the summary table
+// (mg_get_summary_table_name()) for the fast, no-date-filter case, and
+// falls back to aggregating the raw per-visit table only when a date range
+// is requested — see the docblock on mg_get_top_products_global() for why.
+
+/**
+ * Top products site-wide, with optional filters, sorted and paginated.
+ *
+ * IMPORTANT LIMITATION when filtering by date: mg_product_tracking stores
+ * one row per (user, product) with a running total and only the *last*
+ * visit's timestamp — not one row per individual visit. So a date filter
+ * here means "products whose most recent visit from at least one user
+ * falls in this range", and the visit_count summed for that product
+ * includes ALL of that user's historical visits, not just the ones inside
+ * the range. It's a reasonable "recently popular" proxy, not an exact
+ * visits-per-period count. An exact version would need a per-visit event
+ * log or a daily rollup table — worth adding later if trend charts
+ * ("visits this week vs last week") become a requirement.
+ *
+ * @param array $args {
+ *     @type string $search      Match against product title.
+ *     @type int    $brand_id    Restrict to one brand (pwb-brand term_id).
+ *     @type int    $category_id Restrict to one category (product_cat term_id).
+ *     @type int    $min_visits  Only products with at least this many total visits.
+ *     @type string $date_from   Y-m-d. Triggers the raw-table fallback (see above).
+ *     @type string $date_to     Y-m-d. Triggers the raw-table fallback (see above).
+ *     @type string $orderby     total_visits (default) | unique_visitors | last_visited.
+ *     @type string $order       DESC (default) | ASC.
+ *     @type int    $per_page    Default 20.
+ *     @type int    $paged       Default 1.
+ * }
+ * @return array { rows: object[], total: int, pages: int }
+ */
+function mg_get_top_products_global( $args = array() ) {
+    global $wpdb;
+
+    $args = wp_parse_args(
+        $args,
+        array(
+            'search'      => '',
+            'brand_id'    => 0,
+            'category_id' => 0,
+            'min_visits'  => 0,
+            'date_from'   => '',
+            'date_to'     => '',
+            'orderby'     => 'total_visits',
+            'order'       => 'DESC',
+            'per_page'    => 20,
+            'paged'       => 1,
+        )
+    );
+
+    // Whitelist ORDER BY column — never interpolate user input into it directly.
+    $orderby_map = array(
+        'total_visits'    => 'total_visits',
+        'unique_visitors' => 'unique_visitors',
+        'last_visited'    => 'last_visited',
+    );
+    $orderby = isset( $orderby_map[ $args['orderby'] ] ) ? $orderby_map[ $args['orderby'] ] : 'total_visits';
+    $order   = 'ASC' === strtoupper( $args['order'] ) ? 'ASC' : 'DESC';
+
+    $per_page = max( 1, absint( $args['per_page'] ) );
+    $paged    = max( 1, absint( $args['paged'] ) );
+    $offset   = ( $paged - 1 ) * $per_page;
+
+    $raw_table     = mg_get_tracking_table_name();
+    $summary_table = mg_get_summary_table_name();
+
+    $has_date_filter = ( '' !== $args['date_from'] || '' !== $args['date_to'] );
+
+    if ( $has_date_filter ) {
+        $date_where  = array();
+        $date_params = array();
+
+        if ( '' !== $args['date_from'] ) {
+            $date_where[]  = 'last_visited >= %s';
+            $date_params[] = $args['date_from'] . ' 00:00:00';
+        }
+        if ( '' !== $args['date_to'] ) {
+            $date_where[]  = 'last_visited <= %s';
+            $date_params[] = $args['date_to'] . ' 23:59:59';
+        }
+
+        $date_where_sql = $date_where ? ( 'WHERE ' . implode( ' AND ', $date_where ) ) : '';
+
+        $source_sql    = "( SELECT product_id, brand_id, SUM(visit_count) AS total_visits,
+                                    COUNT(DISTINCT user_id) AS unique_visitors, MAX(last_visited) AS last_visited
+                             FROM {$raw_table}
+                             {$date_where_sql}
+                             GROUP BY product_id ) s";
+        $source_params = $date_params;
+    } else {
+        $source_sql    = "{$summary_table} s";
+        $source_params = array();
+    }
+
+    $where  = array( '1=1' );
+    $params = array();
+    $joins  = '';
+
+    if ( $args['category_id'] ) {
+        $joins   .= " INNER JOIN {$wpdb->term_relationships} tr ON tr.object_id = s.product_id
+                       INNER JOIN {$wpdb->term_taxonomy} tt ON tt.term_taxonomy_id = tr.term_taxonomy_id
+                                  AND tt.taxonomy = 'product_cat' AND tt.term_id = %d";
+        $params[] = absint( $args['category_id'] );
+    }
+
+    if ( '' !== $args['search'] ) {
+        $joins   .= " INNER JOIN {$wpdb->posts} p ON p.ID = s.product_id";
+        $where[]  = 'p.post_title LIKE %s';
+        $params[] = '%' . $wpdb->esc_like( $args['search'] ) . '%';
+    }
+
+    if ( $args['brand_id'] ) {
+        $where[]  = 's.brand_id = %d';
+        $params[] = absint( $args['brand_id'] );
+    }
+
+    if ( $args['min_visits'] ) {
+        $where[]  = 's.total_visits >= %d';
+        $params[] = absint( $args['min_visits'] );
+    }
+
+    $where_sql = implode( ' AND ', $where );
+
+    $count_sql = "SELECT COUNT(*) FROM {$source_sql} {$joins} WHERE {$where_sql}";
+    $data_sql  = "SELECT s.product_id, s.brand_id, s.total_visits, s.unique_visitors, s.last_visited
+                  FROM {$source_sql} {$joins}
+                  WHERE {$where_sql}
+                  ORDER BY {$orderby} {$order}
+                  LIMIT %d OFFSET %d";
+
+    // Placeholder order must match their physical order in the SQL above:
+    // source_sql (date range) -> joins (category) -> where (search/brand/min).
+    $all_params  = array_merge( $source_params, $params );
+    $data_params = array_merge( $all_params, array( $per_page, $offset ) );
+
+    $total = (int) $wpdb->get_var(
+        $all_params ? $wpdb->prepare( $count_sql, $all_params ) : $count_sql
+    );
+
+    $rows = $wpdb->get_results(
+        $wpdb->prepare( $data_sql, $data_params )
+    );
+
+    return array(
+        'rows'  => $rows,
+        'total' => $total,
+        'pages' => $per_page ? (int) ceil( $total / $per_page ) : 1,
+    );
+}
+
+/**
+ * Top brands site-wide, with optional filters, sorted and paginated.
+ *
+ * Without a date filter, brand totals are derived from the summary table
+ * (SUM of each brand's products) — fast, but unique_visitors is an
+ * approximation: a customer who viewed two different products of the same
+ * brand counts as 2 there, not 1, since the summary table only tracks
+ * uniqueness per product. With a date filter, totals come from the raw
+ * table grouped directly by brand_id, which gives an exact distinct-visitor
+ * count for that range at the cost of a full scan — acceptable for an
+ * admin-only, occasionally-used report.
+ *
+ * @param array $args {
+ *     @type string $search     Match against brand name.
+ *     @type int    $min_visits Only brands with at least this many total visits.
+ *     @type string $date_from  Y-m-d.
+ *     @type string $date_to    Y-m-d.
+ *     @type string $orderby    total_visits (default) | unique_visitors | last_visited.
+ *     @type string $order      DESC (default) | ASC.
+ *     @type int    $per_page   Default 20.
+ *     @type int    $paged      Default 1.
+ * }
+ * @return array { rows: object[], total: int, pages: int }
+ */
+function mg_get_top_brands_global( $args = array() ) {
+    global $wpdb;
+
+    $args = wp_parse_args(
+        $args,
+        array(
+            'search'     => '',
+            'min_visits' => 0,
+            'date_from'  => '',
+            'date_to'    => '',
+            'orderby'    => 'total_visits',
+            'order'      => 'DESC',
+            'per_page'   => 20,
+            'paged'      => 1,
+        )
+    );
+
+    $orderby_map = array(
+        'total_visits'    => 'total_visits',
+        'unique_visitors' => 'unique_visitors',
+        'last_visited'    => 'last_visited',
+    );
+    $orderby = isset( $orderby_map[ $args['orderby'] ] ) ? $orderby_map[ $args['orderby'] ] : 'total_visits';
+    $order   = 'ASC' === strtoupper( $args['order'] ) ? 'ASC' : 'DESC';
+
+    $per_page = max( 1, absint( $args['per_page'] ) );
+    $paged    = max( 1, absint( $args['paged'] ) );
+    $offset   = ( $paged - 1 ) * $per_page;
+
+    $raw_table     = mg_get_tracking_table_name();
+    $summary_table = mg_get_summary_table_name();
+
+    $has_date_filter = ( '' !== $args['date_from'] || '' !== $args['date_to'] );
+
+    if ( $has_date_filter ) {
+        $date_where  = array( 'brand_id > 0' );
+        $date_params = array();
+
+        if ( '' !== $args['date_from'] ) {
+            $date_where[]  = 'last_visited >= %s';
+            $date_params[] = $args['date_from'] . ' 00:00:00';
+        }
+        if ( '' !== $args['date_to'] ) {
+            $date_where[]  = 'last_visited <= %s';
+            $date_params[] = $args['date_to'] . ' 23:59:59';
+        }
+
+        $date_where_sql = 'WHERE ' . implode( ' AND ', $date_where );
+
+        $source_sql    = "( SELECT brand_id, SUM(visit_count) AS total_visits,
+                                    COUNT(DISTINCT user_id) AS unique_visitors, MAX(last_visited) AS last_visited
+                             FROM {$raw_table}
+                             {$date_where_sql}
+                             GROUP BY brand_id ) s";
+        $source_params = $date_params;
+    } else {
+        $source_sql    = "( SELECT brand_id, SUM(total_visits) AS total_visits,
+                                    SUM(unique_visitors) AS unique_visitors, MAX(last_visited) AS last_visited
+                             FROM {$summary_table}
+                             WHERE brand_id > 0
+                             GROUP BY brand_id ) s";
+        $source_params = array();
+    }
+
+    $where  = array( '1=1' );
+    $params = array();
+    $joins  = '';
+
+    if ( '' !== $args['search'] ) {
+        $joins   .= " INNER JOIN {$wpdb->term_taxonomy} tt ON tt.term_id = s.brand_id AND tt.taxonomy = 'pwb-brand'
+                       INNER JOIN {$wpdb->terms} t ON t.term_id = tt.term_id";
+        $where[]  = 't.name LIKE %s';
+        $params[] = '%' . $wpdb->esc_like( $args['search'] ) . '%';
+    }
+
+    if ( $args['min_visits'] ) {
+        $where[]  = 's.total_visits >= %d';
+        $params[] = absint( $args['min_visits'] );
+    }
+
+    $where_sql = implode( ' AND ', $where );
+
+    $count_sql = "SELECT COUNT(*) FROM {$source_sql} {$joins} WHERE {$where_sql}";
+    $data_sql  = "SELECT s.brand_id, s.total_visits, s.unique_visitors, s.last_visited
+                  FROM {$source_sql} {$joins}
+                  WHERE {$where_sql}
+                  ORDER BY {$orderby} {$order}
+                  LIMIT %d OFFSET %d";
+
+    $all_params  = array_merge( $source_params, $params );
+    $data_params = array_merge( $all_params, array( $per_page, $offset ) );
+
+    $total = (int) $wpdb->get_var(
+        $all_params ? $wpdb->prepare( $count_sql, $all_params ) : $count_sql
+    );
+
+    $rows = $wpdb->get_results(
+        $wpdb->prepare( $data_sql, $data_params )
+    );
+
+    return array(
+        'rows'  => $rows,
+        'total' => $total,
+        'pages' => $per_page ? (int) ceil( $total / $per_page ) : 1,
+    );
+}
+
+/**
+ * Admin menu entry: "Produits Populaires" — the global dashboard, distinct
+ * from "Suivi Utilisateurs" (which is per-user history). Same capability
+ * gate as the rest of the tracking screens.
+ */
+add_action( 'admin_menu', 'mg_register_popular_tracking_menu' );
+function mg_register_popular_tracking_menu() {
+
+    if ( ! mg_user_tracking_can_access() ) {
+        return;
+    }
+
+    add_submenu_page(
+        'edit.php?post_type=product',
+        __( 'Produits & Marques Populaires', 'meilleur-gaskets' ),
+        __( 'Produits Populaires', 'meilleur-gaskets' ),
+        'edit_products',
+        'mg-popular-tracking',
+        'mg_render_popular_tracking_page'
+    );
+}
+
+/**
+ * Page router: tabs between the products view and the brands view.
+ */
+function mg_render_popular_tracking_page() {
+
+    if ( ! current_user_can( 'edit_products' ) ) {
+        wp_die( esc_html__( 'Vous n\'avez pas la permission d\'accéder à cette page.', 'meilleur-gaskets' ) );
+    }
+
+    $view     = isset( $_GET['view'] ) && 'brands' === $_GET['view'] ? 'brands' : 'products';
+    $base_url = admin_url( 'edit.php?post_type=product&page=mg-popular-tracking' );
+
+    echo '<div class="wrap">';
+    echo '<h1>' . esc_html__( 'Produits & Marques Populaires', 'meilleur-gaskets' ) . '</h1>';
+
+    echo '<h2 class="nav-tab-wrapper">';
+    printf(
+        '<a href="%s" class="nav-tab %s">%s</a>',
+        esc_url( add_query_arg( 'view', 'products', $base_url ) ),
+        'products' === $view ? 'nav-tab-active' : '',
+        esc_html__( 'Produits', 'meilleur-gaskets' )
+    );
+    printf(
+        '<a href="%s" class="nav-tab %s">%s</a>',
+        esc_url( add_query_arg( 'view', 'brands', $base_url ) ),
+        'brands' === $view ? 'nav-tab-active' : '',
+        esc_html__( 'Marques', 'meilleur-gaskets' )
+    );
+    echo '</h2>';
+
+    if ( 'brands' === $view ) {
+        mg_render_popular_brands_view( $base_url );
+    } else {
+        mg_render_popular_products_view( $base_url );
+    }
+
+    echo '</div>';
+}
+
+/**
+ * Reads and sanitizes the filter fields shared by both views from $_GET.
+ */
+function mg_get_popular_filters_from_request() {
+    $orderby_allowed = array( 'total_visits', 'unique_visitors', 'last_visited' );
+    $orderby          = isset( $_GET['orderby'] ) ? sanitize_key( $_GET['orderby'] ) : 'total_visits';
+
+    return array(
+        'search'      => isset( $_GET['s'] ) ? sanitize_text_field( wp_unslash( $_GET['s'] ) ) : '',
+        'brand_id'    => isset( $_GET['brand_id'] ) ? absint( $_GET['brand_id'] ) : 0,
+        'category_id' => isset( $_GET['category_id'] ) ? absint( $_GET['category_id'] ) : 0,
+        'min_visits'  => isset( $_GET['min_visits'] ) ? absint( $_GET['min_visits'] ) : 0,
+        // Basic Y-m-d shape check; anything malformed is dropped rather than
+        // passed to SQL — an empty string just means "no date filter".
+        'date_from'   => ( isset( $_GET['date_from'] ) && preg_match( '/^\d{4}-\d{2}-\d{2}$/', $_GET['date_from'] ) ) ? $_GET['date_from'] : '',
+        'date_to'     => ( isset( $_GET['date_to'] ) && preg_match( '/^\d{4}-\d{2}-\d{2}$/', $_GET['date_to'] ) ) ? $_GET['date_to'] : '',
+        'orderby'     => in_array( $orderby, $orderby_allowed, true ) ? $orderby : 'total_visits',
+        'order'       => ( isset( $_GET['order'] ) && 'asc' === strtolower( $_GET['order'] ) ) ? 'ASC' : 'DESC',
+        'paged'       => isset( $_GET['paged'] ) ? max( 1, absint( $_GET['paged'] ) ) : 1,
+    );
+}
+
+/**
+ * Renders the shared bits of the filter bar (search, min visits, date
+ * range, sort) as hidden/visible inputs on a GET form. $extra_fields_cb, if
+ * given, is called to inject view-specific fields (brand/category dropdowns)
+ * before the submit button.
+ */
+function mg_render_popular_filter_form( $base_url, $view, $filters, $extra_fields_cb = null ) {
+    echo '<form method="get" action="' . esc_url( admin_url( 'edit.php' ) ) . '" style="margin:15px 0;display:flex;flex-wrap:wrap;gap:10px;align-items:end;">';
+    echo '<input type="hidden" name="post_type" value="product" />';
+    echo '<input type="hidden" name="page" value="mg-popular-tracking" />';
+    echo '<input type="hidden" name="view" value="' . esc_attr( $view ) . '" />';
+
+    echo '<p style="margin:0;"><label>' . esc_html__( 'Recherche', 'meilleur-gaskets' ) . '<br/>';
+    echo '<input type="search" name="s" value="' . esc_attr( $filters['search'] ) . '" placeholder="' . esc_attr__( 'Nom…', 'meilleur-gaskets' ) . '" /></label></p>';
+
+    if ( is_callable( $extra_fields_cb ) ) {
+        call_user_func( $extra_fields_cb, $filters );
+    }
+
+    echo '<p style="margin:0;"><label>' . esc_html__( 'Depuis', 'meilleur-gaskets' ) . '<br/>';
+    echo '<input type="date" name="date_from" value="' . esc_attr( $filters['date_from'] ) . '" /></label></p>';
+
+    echo '<p style="margin:0;"><label>' . esc_html__( "Jusqu'à", 'meilleur-gaskets' ) . '<br/>';
+    echo '<input type="date" name="date_to" value="' . esc_attr( $filters['date_to'] ) . '" /></label></p>';
+
+    echo '<p style="margin:0;"><label>' . esc_html__( 'Visites min.', 'meilleur-gaskets' ) . '<br/>';
+    echo '<input type="number" min="0" name="min_visits" value="' . esc_attr( $filters['min_visits'] ? $filters['min_visits'] : '' ) . '" style="width:90px;" /></label></p>';
+
+    echo '<p style="margin:0;"><label>' . esc_html__( 'Trier par', 'meilleur-gaskets' ) . '<br/>';
+    echo '<select name="orderby">';
+    $orderby_labels = array(
+        'total_visits'    => __( 'Visites totales', 'meilleur-gaskets' ),
+        'unique_visitors' => __( 'Visiteurs uniques', 'meilleur-gaskets' ),
+        'last_visited'    => __( 'Dernière visite', 'meilleur-gaskets' ),
+    );
+    foreach ( $orderby_labels as $value => $label ) {
+        printf(
+            '<option value="%s" %s>%s</option>',
+            esc_attr( $value ),
+            selected( $filters['orderby'], $value, false ),
+            esc_html( $label )
+        );
+    }
+    echo '</select></label></p>';
+
+    echo '<p style="margin:0;"><label>' . esc_html__( 'Ordre', 'meilleur-gaskets' ) . '<br/>';
+    echo '<select name="order">';
+    printf( '<option value="DESC" %s>%s</option>', selected( $filters['order'], 'DESC', false ), esc_html__( 'Décroissant', 'meilleur-gaskets' ) );
+    printf( '<option value="ASC" %s>%s</option>', selected( $filters['order'], 'ASC', false ), esc_html__( 'Croissant', 'meilleur-gaskets' ) );
+    echo '</select></label></p>';
+
+    echo '<p style="margin:0;"><input type="submit" class="button button-primary" value="' . esc_attr__( 'Filtrer', 'meilleur-gaskets' ) . '" /></p>';
+
+    $has_any_filter = $filters['search'] || $filters['date_from'] || $filters['date_to'] || $filters['min_visits']
+        || ! empty( $filters['brand_id'] ) || ! empty( $filters['category_id'] );
+    if ( $has_any_filter ) {
+        echo '<p style="margin:0;"><a href="' . esc_url( add_query_arg( 'view', $view, $base_url ) ) . '" class="button">' . esc_html__( 'Réinitialiser', 'meilleur-gaskets' ) . '</a></p>';
+    }
+
+    echo '</form>';
+}
+
+/**
+ * Renders pagination links, preserving all current filters.
+ */
+function mg_render_popular_pagination( $base_url, $filters, $total_pages ) {
+    if ( $total_pages < 2 ) {
+        return;
+    }
+
+    $current_url = add_query_arg( $filters, $base_url );
+
+    echo '<div class="tablenav"><div class="tablenav-pages">';
+    echo paginate_links(
+        array(
+            'base'      => add_query_arg( 'paged', '%#%', $current_url ),
+            'format'    => '',
+            'current'   => $filters['paged'],
+            'total'     => $total_pages,
+            'prev_text' => __( '&laquo; Précédent', 'meilleur-gaskets' ),
+            'next_text' => __( 'Suivant &raquo;', 'meilleur-gaskets' ),
+        )
+    );
+    echo '</div></div>';
+}
+
+/**
+ * VIEW: most visited products, site-wide.
+ */
+function mg_render_popular_products_view( $base_url ) {
+
+    $filters = mg_get_popular_filters_from_request();
+
+    mg_render_popular_filter_form(
+        $base_url,
+        'products',
+        $filters,
+        function ( $filters ) {
+            // Brand dropdown
+            $brands = get_terms( array( 'taxonomy' => 'pwb-brand', 'hide_empty' => false ) );
+            echo '<p style="margin:0;"><label>' . esc_html__( 'Marque', 'meilleur-gaskets' ) . '<br/>';
+            echo '<select name="brand_id"><option value="0">' . esc_html__( 'Toutes', 'meilleur-gaskets' ) . '</option>';
+            if ( ! is_wp_error( $brands ) ) {
+                foreach ( $brands as $brand ) {
+                    printf(
+                        '<option value="%d" %s>%s</option>',
+                        (int) $brand->term_id,
+                        selected( $filters['brand_id'], $brand->term_id, false ),
+                        esc_html( $brand->name )
+                    );
+                }
+            }
+            echo '</select></label></p>';
+
+            // Category dropdown
+            $categories = get_terms( array( 'taxonomy' => 'product_cat', 'hide_empty' => false ) );
+            echo '<p style="margin:0;"><label>' . esc_html__( 'Catégorie', 'meilleur-gaskets' ) . '<br/>';
+            echo '<select name="category_id"><option value="0">' . esc_html__( 'Toutes', 'meilleur-gaskets' ) . '</option>';
+            if ( ! is_wp_error( $categories ) ) {
+                foreach ( $categories as $cat ) {
+                    printf(
+                        '<option value="%d" %s>%s</option>',
+                        (int) $cat->term_id,
+                        selected( $filters['category_id'], $cat->term_id, false ),
+                        esc_html( $cat->name )
+                    );
+                }
+            }
+            echo '</select></label></p>';
+        }
+    );
+
+    $filters['per_page'] = 20;
+    $result               = mg_get_top_products_global( $filters );
+
+    if ( empty( $result['rows'] ) ) {
+        echo '<p>' . esc_html__( 'Aucun produit ne correspond à ces filtres.', 'meilleur-gaskets' ) . '</p>';
+        return;
+    }
+
+    echo '<table class="wp-list-table widefat fixed striped">';
+    echo '<thead><tr>';
+    echo '<th style="width:80px;">' . esc_html__( 'Image', 'meilleur-gaskets' ) . '</th>';
+    echo '<th>' . esc_html__( 'Produit', 'meilleur-gaskets' ) . '</th>';
+    echo '<th>' . esc_html__( 'Marque', 'meilleur-gaskets' ) . '</th>';
+    echo '<th>' . esc_html__( 'Visites totales', 'meilleur-gaskets' ) . '</th>';
+    echo '<th>' . esc_html__( 'Visiteurs uniques', 'meilleur-gaskets' ) . '</th>';
+    echo '<th>' . esc_html__( 'Dernière visite', 'meilleur-gaskets' ) . '</th>';
+    echo '</tr></thead><tbody>';
+
+    foreach ( $result['rows'] as $row ) {
+        $product = wc_get_product( $row->product_id );
+        if ( ! $product ) {
+            continue; // Product deleted since last visit; skip silently.
+        }
+
+        $brand_name = '—';
+        if ( $row->brand_id ) {
+            $brand_term = get_term( $row->brand_id, 'pwb-brand' );
+            if ( $brand_term && ! is_wp_error( $brand_term ) ) {
+                $brand_name = $brand_term->name;
+            }
+        }
+
+        $thumbnail = $product->get_image( array( 40, 40 ) );
+        $store_url = get_permalink( $product->get_id() );
+
+        echo '<tr>';
+        echo '<td>' . $thumbnail . '</td>';
+        echo '<td>';
+        if ( $store_url ) {
+            echo '<a href="' . esc_url( $store_url ) . '" target="_blank" rel="noopener noreferrer">' . esc_html( $product->get_name() ) . '</a>';
+        } else {
+            echo esc_html( $product->get_name() );
+        }
+        echo '</td>';
+        echo '<td>' . esc_html( $brand_name ) . '</td>';
+        echo '<td>' . esc_html( number_format_i18n( (int) $row->total_visits ) ) . '</td>';
+        echo '<td>' . esc_html( number_format_i18n( (int) $row->unique_visitors ) ) . '</td>';
+        echo '<td>' . esc_html( $row->last_visited ? date_i18n( 'd/m/Y H:i', strtotime( $row->last_visited ) ) : '—' ) . '</td>';
+        echo '</tr>';
+    }
+
+    echo '</tbody></table>';
+
+    mg_render_popular_pagination( $base_url, $filters, $result['pages'] );
+}
+
+/**
+ * VIEW: most visited brands, site-wide.
+ */
+function mg_render_popular_brands_view( $base_url ) {
+
+    $filters = mg_get_popular_filters_from_request();
+
+    mg_render_popular_filter_form( $base_url, 'brands', $filters, null );
+
+    $filters['per_page'] = 20;
+    $result               = mg_get_top_brands_global( $filters );
+
+    if ( empty( $result['rows'] ) ) {
+        echo '<p>' . esc_html__( 'Aucune marque ne correspond à ces filtres.', 'meilleur-gaskets' ) . '</p>';
+        return;
+    }
+
+    echo '<table class="wp-list-table widefat fixed striped">';
+    echo '<thead><tr>';
+    echo '<th style="width:80px;">' . esc_html__( 'Logo', 'meilleur-gaskets' ) . '</th>';
+    echo '<th>' . esc_html__( 'Marque', 'meilleur-gaskets' ) . '</th>';
+    echo '<th>' . esc_html__( 'Visites totales', 'meilleur-gaskets' ) . '</th>';
+    echo '<th>' . esc_html__( 'Visiteurs uniques', 'meilleur-gaskets' ) . '</th>';
+    echo '<th>' . esc_html__( 'Dernière visite', 'meilleur-gaskets' ) . '</th>';
+    echo '</tr></thead><tbody>';
+
+    foreach ( $result['rows'] as $row ) {
+        $brand_term = get_term( $row->brand_id, 'pwb-brand' );
+        if ( ! $brand_term || is_wp_error( $brand_term ) ) {
+            continue; // Brand term deleted since last visit; skip silently.
+        }
+
+        $brand_img_id = get_term_meta( $brand_term->term_id, 'pwb_brand_image', true );
+        $brand_img    = $brand_img_id ? wp_get_attachment_image( $brand_img_id, array( 40, 40 ) ) : '';
+
+        echo '<tr>';
+        echo '<td>' . ( $brand_img ? $brand_img : '—' ) . '</td>';
+        echo '<td>' . esc_html( $brand_term->name ) . '</td>';
+        echo '<td>' . esc_html( number_format_i18n( (int) $row->total_visits ) ) . '</td>';
+        echo '<td>' . esc_html( number_format_i18n( (int) $row->unique_visitors ) ) . '</td>';
+        echo '<td>' . esc_html( $row->last_visited ? date_i18n( 'd/m/Y H:i', strtotime( $row->last_visited ) ) : '—' ) . '</td>';
+        echo '</tr>';
+    }
+
+    echo '</tbody></table>';
+
+    mg_render_popular_pagination( $base_url, $filters, $result['pages'] );
+}
+
+
 
 ?>
