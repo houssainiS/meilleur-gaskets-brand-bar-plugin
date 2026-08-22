@@ -3940,6 +3940,11 @@ function mg_render_popular_products_view( $base_url ) {
 
     $filters = mg_get_popular_filters_from_request();
 
+    // Everything below — filter form, table, pagination — lives inside this
+    // container so a drill-down can swap it out entirely (and a "back"
+    // click can restore it) without touching the tab nav above it.
+    echo '<div id="mg-popular-content">';
+
     mg_render_popular_filter_form(
         $base_url,
         'products',
@@ -3984,6 +3989,7 @@ function mg_render_popular_products_view( $base_url ) {
 
     if ( empty( $result['rows'] ) ) {
         echo '<p>' . esc_html__( 'Aucun produit ne correspond à ces filtres.', 'meilleur-gaskets' ) . '</p>';
+        echo '</div>'; // #mg-popular-content
         return;
     }
 
@@ -4020,10 +4026,12 @@ function mg_render_popular_products_view( $base_url ) {
         echo '<tr>';
         echo '<td>' . $thumbnail . '</td>';
         echo '<td>';
+        // Clicking the title navigates (AJAX, no page reload) to the list
+        // of users who viewed this product. The small ↗ next to it is the
+        // only thing that opens the actual storefront product page.
+        echo '<span class="mg-drilldown-link" data-mg-type="product" data-mg-id="' . esc_attr( $row->product_id ) . '" tabindex="0" role="button">' . esc_html( $product->get_name() ) . '</span>';
         if ( $store_url ) {
-            echo '<a href="' . esc_url( $store_url ) . '" target="_blank" rel="noopener noreferrer">' . esc_html( $product->get_name() ) . '</a>';
-        } else {
-            echo esc_html( $product->get_name() );
+            echo ' <a href="' . esc_url( $store_url ) . '" target="_blank" rel="noopener noreferrer" class="mg-external-link" title="' . esc_attr__( 'Voir la fiche produit', 'meilleur-gaskets' ) . '">&#8599;</a>';
         }
         echo '</td>';
         echo '<td>' . ( $reference ? esc_html( $reference ) : '—' ) . '</td>';
@@ -4037,6 +4045,8 @@ function mg_render_popular_products_view( $base_url ) {
     echo '</tbody></table>';
 
     mg_render_popular_pagination( $base_url, $filters, $result['pages'] );
+
+    echo '</div>'; // #mg-popular-content
 }
 
 /**
@@ -4046,6 +4056,8 @@ function mg_render_popular_brands_view( $base_url ) {
 
     $filters = mg_get_popular_filters_from_request();
 
+    echo '<div id="mg-popular-content">';
+
     mg_render_popular_filter_form( $base_url, 'brands', $filters, null );
 
     $filters['per_page'] = 20;
@@ -4053,6 +4065,7 @@ function mg_render_popular_brands_view( $base_url ) {
 
     if ( empty( $result['rows'] ) ) {
         echo '<p>' . esc_html__( 'Aucune marque ne correspond à ces filtres.', 'meilleur-gaskets' ) . '</p>';
+        echo '</div>'; // #mg-popular-content
         return;
     }
 
@@ -4073,10 +4086,17 @@ function mg_render_popular_brands_view( $base_url ) {
 
         $brand_img_id = get_term_meta( $brand_term->term_id, 'pwb_brand_image', true );
         $brand_img    = $brand_img_id ? wp_get_attachment_image( $brand_img_id, array( 40, 40 ) ) : '';
+        $brand_shop_url = add_query_arg( 'pwb-brand', $brand_term->slug, get_permalink( wc_get_page_id( 'shop' ) ) );
 
         echo '<tr>';
         echo '<td>' . ( $brand_img ? $brand_img : '—' ) . '</td>';
-        echo '<td>' . esc_html( $brand_term->name ) . '</td>';
+        echo '<td>';
+        // Clicking the name navigates (AJAX, no page reload) to that
+        // brand's product list. The small ↗ opens the actual storefront
+        // shop page filtered to this brand.
+        echo '<span class="mg-drilldown-link" data-mg-type="brand" data-mg-id="' . esc_attr( $row->brand_id ) . '" tabindex="0" role="button">' . esc_html( $brand_term->name ) . '</span>';
+        echo ' <a href="' . esc_url( $brand_shop_url ) . '" target="_blank" rel="noopener noreferrer" class="mg-external-link" title="' . esc_attr__( 'Voir la page de la marque', 'meilleur-gaskets' ) . '">&#8599;</a>';
+        echo '</td>';
         echo '<td>' . esc_html( number_format_i18n( (int) $row->total_visits ) ) . '</td>';
         echo '<td>' . esc_html( number_format_i18n( (int) $row->unique_visitors ) ) . '</td>';
         echo '<td>' . esc_html( $row->last_visited ? date_i18n( 'd/m/Y H:i', strtotime( $row->last_visited ) ) : '—' ) . '</td>';
@@ -4086,7 +4106,411 @@ function mg_render_popular_brands_view( $base_url ) {
     echo '</tbody></table>';
 
     mg_render_popular_pagination( $base_url, $filters, $result['pages'] );
+
+    echo '</div>'; // #mg-popular-content
 }
+
+// =========================================================
+// SECTION 27: AJAX DRILL-DOWNS FOR THE POPULARITY DASHBOARD
+// =========================================================
+// Powers three interactions on the "Produits Populaires" admin screen, all
+// as an in-place view swap inside #mg-popular-content (no page reload, no
+// modal, no accordion):
+//
+//   1. Click a product's title -> that container's content is replaced by
+//      a table of every user who viewed it. The small ↗ next to the title
+//      is the only thing that opens the real storefront product page.
+//   2. Click a brand's title   -> replaced by a table of that brand's
+//      products, same ↗ convention (opens the shop page filtered to the
+//      brand).
+//   3. Click a product title *inside* that brand table -> the same user
+//      table as (1). This falls out for free: every product row, whether
+//      rendered on page load or injected later via AJAX, carries the same
+//      class="mg-drilldown-link" data-mg-type="product" contract, and the
+//      JS below delegates its click handler on the container rather than
+//      binding to specific elements — so it also catches rows that don't
+//      exist yet at page-load time.
+//
+// A "← Retour" button is part of every AJAX-returned view; clicking it
+// pops a client-side history stack of previous view snapshots, so going
+// back is instant (no re-fetch) and works through arbitrary depth.
+//
+// Both AJAX endpoints return a small JSON envelope { success, data: { html } }
+// where `html` is a fully server-rendered (and already-escaped) fragment —
+// the JS's only job is to drop it into the container, it does no
+// templating of its own.
+
+/**
+ * AJAX: table of every user who viewed a given product, plus a back button
+ * and a heading with a ↗ link to the real storefront product page.
+ * Backs both the top-level product drill-down and the nested one reached
+ * via a brand's product list — same handler either way.
+ */
+add_action( 'wp_ajax_mg_get_product_viewers', 'mg_ajax_get_product_viewers' );
+function mg_ajax_get_product_viewers() {
+    check_ajax_referer( 'mg_popular_dashboard', 'nonce' );
+
+    if ( ! current_user_can( 'edit_products' ) ) {
+        wp_send_json_error( array( 'message' => __( 'Permission refusée.', 'meilleur-gaskets' ) ), 403 );
+    }
+
+    $product_id = isset( $_POST['product_id'] ) ? absint( $_POST['product_id'] ) : 0;
+    if ( ! $product_id ) {
+        wp_send_json_error( array( 'message' => __( 'Produit invalide.', 'meilleur-gaskets' ) ), 400 );
+    }
+
+    $product = wc_get_product( $product_id );
+    if ( ! $product ) {
+        wp_send_json_error( array( 'message' => __( 'Produit introuvable.', 'meilleur-gaskets' ) ), 404 );
+    }
+
+    global $wpdb;
+    $raw_table = mg_get_tracking_table_name();
+
+    $rows = $wpdb->get_results(
+        $wpdb->prepare(
+            "SELECT t.user_id, t.visit_count, t.last_visited, u.display_name, u.user_email
+             FROM {$raw_table} t
+             INNER JOIN {$wpdb->users} u ON u.ID = t.user_id
+             WHERE t.product_id = %d
+             ORDER BY t.visit_count DESC, t.last_visited DESC",
+            $product_id
+        )
+    );
+
+    $store_url = get_permalink( $product->get_id() );
+
+    ob_start();
+
+    echo '<div class="mg-drilldown-header">';
+    echo '<button type="button" class="button mg-drilldown-back">&#8592; ' . esc_html__( 'Retour', 'meilleur-gaskets' ) . '</button>';
+    echo '<h2 class="mg-drilldown-title">';
+    printf(
+        /* translators: %s: product name */
+        esc_html__( 'Utilisateurs ayant consulté « %s »', 'meilleur-gaskets' ),
+        esc_html( $product->get_name() )
+    );
+    if ( $store_url ) {
+        echo ' <a href="' . esc_url( $store_url ) . '" target="_blank" rel="noopener noreferrer" class="mg-external-link" title="' . esc_attr__( 'Voir la fiche produit', 'meilleur-gaskets' ) . '">&#8599;</a>';
+    }
+    echo '</h2>';
+    echo '</div>';
+
+    if ( empty( $rows ) ) {
+        echo '<p class="mg-drilldown-empty">' . esc_html__( 'Aucun visiteur enregistré pour ce produit.', 'meilleur-gaskets' ) . '</p>';
+    } else {
+        echo '<table class="wp-list-table widefat fixed striped mg-drilldown-table">';
+        echo '<thead><tr>';
+        echo '<th>' . esc_html__( 'Utilisateur', 'meilleur-gaskets' ) . '</th>';
+        echo '<th>' . esc_html__( 'Email', 'meilleur-gaskets' ) . '</th>';
+        echo '<th>' . esc_html__( 'Visites', 'meilleur-gaskets' ) . '</th>';
+        echo '<th>' . esc_html__( 'Dernière visite', 'meilleur-gaskets' ) . '</th>';
+        echo '</tr></thead><tbody>';
+
+        foreach ( $rows as $row ) {
+            $user_edit_url = get_edit_user_link( $row->user_id );
+
+            echo '<tr>';
+            echo '<td>';
+            if ( $user_edit_url ) {
+                echo '<a href="' . esc_url( $user_edit_url ) . '" target="_blank" rel="noopener noreferrer">' . esc_html( $row->display_name ) . '</a>';
+            } else {
+                echo esc_html( $row->display_name );
+            }
+            echo '</td>';
+            echo '<td>' . esc_html( $row->user_email ) . '</td>';
+            echo '<td>' . esc_html( number_format_i18n( (int) $row->visit_count ) ) . '</td>';
+            echo '<td>' . esc_html( $row->last_visited ? date_i18n( 'd/m/Y H:i', strtotime( $row->last_visited ) ) : '—' ) . '</td>';
+            echo '</tr>';
+        }
+
+        echo '</tbody></table>';
+    }
+
+    wp_send_json_success( array( 'html' => ob_get_clean() ) );
+}
+
+/**
+ * AJAX: table of the products viewed under a given brand, plus a back
+ * button and a heading with a ↗ link to the storefront shop page filtered
+ * to this brand.
+ * Each product row uses the same data-mg-type="product" contract as the
+ * top-level product list, so clicking one re-enters
+ * mg_ajax_get_product_viewers() above through the same JS — that's the
+ * "deep drill-down" (brand -> product -> users), no extra wiring needed.
+ */
+add_action( 'wp_ajax_mg_get_brand_products', 'mg_ajax_get_brand_products' );
+function mg_ajax_get_brand_products() {
+    check_ajax_referer( 'mg_popular_dashboard', 'nonce' );
+
+    if ( ! current_user_can( 'edit_products' ) ) {
+        wp_send_json_error( array( 'message' => __( 'Permission refusée.', 'meilleur-gaskets' ) ), 403 );
+    }
+
+    $brand_id = isset( $_POST['brand_id'] ) ? absint( $_POST['brand_id'] ) : 0;
+    if ( ! $brand_id ) {
+        wp_send_json_error( array( 'message' => __( 'Marque invalide.', 'meilleur-gaskets' ) ), 400 );
+    }
+
+    $brand_term = get_term( $brand_id, 'pwb-brand' );
+    if ( ! $brand_term || is_wp_error( $brand_term ) ) {
+        wp_send_json_error( array( 'message' => __( 'Marque introuvable.', 'meilleur-gaskets' ) ), 404 );
+    }
+
+    global $wpdb;
+    $summary_table = mg_get_summary_table_name();
+
+    // Reads from the summary table (one row per product) rather than the
+    // raw visit log — same fast-path reasoning as mg_get_top_products_global().
+    $rows = $wpdb->get_results(
+        $wpdb->prepare(
+            "SELECT product_id, total_visits, unique_visitors, last_visited
+             FROM {$summary_table}
+             WHERE brand_id = %d
+             ORDER BY total_visits DESC",
+            $brand_id
+        )
+    );
+
+    $brand_shop_url = add_query_arg( 'pwb-brand', $brand_term->slug, get_permalink( wc_get_page_id( 'shop' ) ) );
+
+    ob_start();
+
+    echo '<div class="mg-drilldown-header">';
+    echo '<button type="button" class="button mg-drilldown-back">&#8592; ' . esc_html__( 'Retour', 'meilleur-gaskets' ) . '</button>';
+    echo '<h2 class="mg-drilldown-title">';
+    printf(
+        /* translators: %s: brand name */
+        esc_html__( 'Produits de la marque « %s »', 'meilleur-gaskets' ),
+        esc_html( $brand_term->name )
+    );
+    echo ' <a href="' . esc_url( $brand_shop_url ) . '" target="_blank" rel="noopener noreferrer" class="mg-external-link" title="' . esc_attr__( 'Voir la page de la marque', 'meilleur-gaskets' ) . '">&#8599;</a>';
+    echo '</h2>';
+    echo '</div>';
+
+    if ( empty( $rows ) ) {
+        echo '<p class="mg-drilldown-empty">' . esc_html__( 'Aucun produit enregistré pour cette marque.', 'meilleur-gaskets' ) . '</p>';
+    } else {
+        echo '<table class="wp-list-table widefat fixed striped mg-drilldown-table">';
+        echo '<thead><tr>';
+        echo '<th>' . esc_html__( 'Produit', 'meilleur-gaskets' ) . '</th>';
+        echo '<th>' . esc_html__( 'Référence', 'meilleur-gaskets' ) . '</th>';
+        echo '<th>' . esc_html__( 'Visites totales', 'meilleur-gaskets' ) . '</th>';
+        echo '<th>' . esc_html__( 'Visiteurs uniques', 'meilleur-gaskets' ) . '</th>';
+        echo '<th>' . esc_html__( 'Dernière visite', 'meilleur-gaskets' ) . '</th>';
+        echo '</tr></thead><tbody>';
+
+        foreach ( $rows as $row ) {
+            $product = wc_get_product( $row->product_id );
+            if ( ! $product ) {
+                continue; // Product deleted since last visit; skip silently.
+            }
+
+            $reference = function_exists( 'get_field' ) ? get_field( 'reference', $product->get_id() ) : '';
+            $store_url = get_permalink( $product->get_id() );
+
+            echo '<tr>';
+            echo '<td>';
+            echo '<span class="mg-drilldown-link" data-mg-type="product" data-mg-id="' . esc_attr( $row->product_id ) . '" tabindex="0" role="button">' . esc_html( $product->get_name() ) . '</span>';
+            if ( $store_url ) {
+                echo ' <a href="' . esc_url( $store_url ) . '" target="_blank" rel="noopener noreferrer" class="mg-external-link" title="' . esc_attr__( 'Voir la fiche produit', 'meilleur-gaskets' ) . '">&#8599;</a>';
+            }
+            echo '</td>';
+            echo '<td>' . ( $reference ? esc_html( $reference ) : '—' ) . '</td>';
+            echo '<td>' . esc_html( number_format_i18n( (int) $row->total_visits ) ) . '</td>';
+            echo '<td>' . esc_html( number_format_i18n( (int) $row->unique_visitors ) ) . '</td>';
+            echo '<td>' . esc_html( $row->last_visited ? date_i18n( 'd/m/Y H:i', strtotime( $row->last_visited ) ) : '—' ) . '</td>';
+            echo '</tr>';
+        }
+
+        echo '</tbody></table>';
+    }
+
+    wp_send_json_success( array( 'html' => ob_get_clean() ) );
+}
+
+/**
+ * Enqueue the drill-down JS/CSS, only on the "Produits Populaires" screen.
+ */
+add_action( 'admin_enqueue_scripts', 'mg_enqueue_popular_dashboard_script' );
+function mg_enqueue_popular_dashboard_script( $hook_suffix ) {
+
+    if ( false === strpos( (string) $hook_suffix, 'mg-popular-tracking' ) ) {
+        return;
+    }
+
+    // No separate .js/.css asset for this small amount of code — a stub
+    // handle is enough to hang wp_add_inline_script()/wp_add_inline_style() on.
+    wp_register_script( 'mg-popular-dashboard', '', array(), '1.0', true );
+    wp_enqueue_script( 'mg-popular-dashboard' );
+
+    wp_localize_script(
+        'mg-popular-dashboard',
+        'mgPopularDashboard',
+        array(
+            'ajaxUrl' => admin_url( 'admin-ajax.php' ),
+            'nonce'   => wp_create_nonce( 'mg_popular_dashboard' ),
+            'i18n'    => array(
+                'loading' => __( 'Chargement…', 'meilleur-gaskets' ),
+                'error'   => __( "Une erreur s'est produite.", 'meilleur-gaskets' ),
+                'back'    => __( '← Retour', 'meilleur-gaskets' ),
+            ),
+        )
+    );
+
+    // Navigation model: #mg-popular-content is swapped wholesale on each
+    // drill-down (product/brand title click), and a client-side stack of
+    // its previous innerHTML powers the "back" button — no re-fetching on
+    // the way back, and it naturally supports going N levels deep
+    // (products list -> brand's products -> that product's viewers) since
+    // each level just pushes one more snapshot onto the stack.
+    $inline_js = <<<'JS'
+( function () {
+    if ( ! window.mgPopularDashboard ) {
+        return;
+    }
+
+    var container = document.getElementById( 'mg-popular-content' );
+    if ( ! container ) {
+        return;
+    }
+
+    var historyStack = [];
+
+    var AJAX_ACTIONS = {
+        product: 'mg_get_product_viewers',
+        brand:   'mg_get_brand_products'
+    };
+
+    var ID_FIELDS = {
+        product: 'product_id',
+        brand:   'brand_id'
+    };
+
+    function showLoading() {
+        container.innerHTML = '';
+        var p = document.createElement( 'p' );
+        p.className = 'mg-drilldown-loading';
+        p.textContent = mgPopularDashboard.i18n.loading;
+        container.appendChild( p );
+    }
+
+    function showError( text ) {
+        container.innerHTML = '';
+
+        var p = document.createElement( 'p' );
+        p.className = 'mg-drilldown-error';
+        p.textContent = text;
+        container.appendChild( p );
+
+        // Keep a way out of the error state even though nothing loaded —
+        // the previous view is still sitting on historyStack.
+        var backBtn = document.createElement( 'button' );
+        backBtn.type = 'button';
+        backBtn.className = 'button mg-drilldown-back';
+        backBtn.textContent = mgPopularDashboard.i18n.back;
+        container.appendChild( backBtn );
+    }
+
+    function navigateTo( type, id ) {
+        var action  = AJAX_ACTIONS[ type ];
+        var idField = ID_FIELDS[ type ];
+        if ( ! action || ! idField ) {
+            return;
+        }
+
+        // Snapshot the current view so "back" can restore it instantly,
+        // without a round trip.
+        historyStack.push( container.innerHTML );
+
+        showLoading();
+
+        var formData = new FormData();
+        formData.append( 'action', action );
+        formData.append( 'nonce', mgPopularDashboard.nonce );
+        formData.append( idField, id );
+
+        fetch( mgPopularDashboard.ajaxUrl, {
+            method: 'POST',
+            credentials: 'same-origin',
+            body: formData
+        } )
+            .then( function ( response ) { return response.json(); } )
+            .then( function ( data ) {
+                if ( data && data.success && data.data && typeof data.data.html === 'string' ) {
+                    // Server-rendered, already-escaped fragment from our own
+                    // AJAX handlers — same trust level as any other
+                    // admin-rendered markup in this plugin.
+                    container.innerHTML = data.data.html;
+                } else {
+                    var message = ( data && data.data && data.data.message ) ? data.data.message : mgPopularDashboard.i18n.error;
+                    showError( message );
+                }
+            } )
+            .catch( function () {
+                showError( mgPopularDashboard.i18n.error );
+            } );
+    }
+
+    function goBack() {
+        if ( ! historyStack.length ) {
+            return;
+        }
+        container.innerHTML = historyStack.pop();
+    }
+
+    function handleActivate( target ) {
+        var link = target.closest ? target.closest( '.mg-drilldown-link' ) : null;
+        if ( link ) {
+            navigateTo( link.getAttribute( 'data-mg-type' ), link.getAttribute( 'data-mg-id' ) );
+            return;
+        }
+
+        var backBtn = target.closest ? target.closest( '.mg-drilldown-back' ) : null;
+        if ( backBtn ) {
+            goBack();
+        }
+    }
+
+    // Delegated on the container (not individual rows) so it keeps working
+    // for markup injected later by a drill-down — including nested product
+    // rows inside a brand's product list.
+    container.addEventListener( 'click', function ( e ) {
+        handleActivate( e.target );
+    } );
+
+    container.addEventListener( 'keydown', function ( e ) {
+        if ( 'Enter' !== e.key && ' ' !== e.key && 'Spacebar' !== e.key ) {
+            return;
+        }
+        var link = e.target.closest ? e.target.closest( '.mg-drilldown-link' ) : null;
+        if ( ! link ) {
+            return;
+        }
+        e.preventDefault();
+        navigateTo( link.getAttribute( 'data-mg-type' ), link.getAttribute( 'data-mg-id' ) );
+    } );
+} )();
+JS;
+
+    wp_add_inline_script( 'mg-popular-dashboard', $inline_js );
+
+    // 'wp-admin' is already enqueued on every admin screen — attaching a
+    // few inline rules to it avoids registering a whole stylesheet for this.
+    $inline_css = '
+        .mg-drilldown-link { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
+        .mg-drilldown-link:hover, .mg-drilldown-link:focus { color: #2271b1; }
+        .mg-drilldown-link:focus { outline: 2px solid #2271b1; outline-offset: 2px; }
+        .mg-external-link { text-decoration: none; margin-left: 2px; }
+        .mg-drilldown-header { margin-bottom: 12px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+        .mg-drilldown-title { margin: 0; }
+        .mg-drilldown-loading, .mg-drilldown-empty { color: #757575; font-style: italic; }
+        .mg-drilldown-error { color: #d63638; }
+        .mg-drilldown-table th, .mg-drilldown-table td { padding: 8px 10px; }
+    ';
+    wp_add_inline_style( 'wp-admin', $inline_css );
+}
+
 
 
 
