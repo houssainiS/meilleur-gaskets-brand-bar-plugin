@@ -4208,16 +4208,8 @@ function mg_ajax_get_product_viewers() {
         echo '</tr></thead><tbody>';
 
         foreach ( $rows as $row ) {
-            $user_edit_url = get_edit_user_link( $row->user_id );
-
             echo '<tr>';
-            echo '<td>';
-            if ( $user_edit_url ) {
-                echo '<a href="' . esc_url( $user_edit_url ) . '" target="_blank" rel="noopener noreferrer">' . esc_html( $row->display_name ) . '</a>';
-            } else {
-                echo esc_html( $row->display_name );
-            }
-            echo '</td>';
+            echo '<td>' . esc_html( $row->display_name ) . '</td>';
             echo '<td>' . esc_html( $row->user_email ) . '</td>';
             echo '<td>' . esc_html( number_format_i18n( (int) $row->visit_count ) ) . '</td>';
             echo '<td>' . esc_html( $row->last_visited ? date_i18n( 'd/m/Y H:i', strtotime( $row->last_visited ) ) : '—' ) . '</td>';
@@ -4387,12 +4379,25 @@ function mg_enqueue_popular_dashboard_script( $hook_suffix ) {
         brand:   'brand_id'
     };
 
+    // Every navigation swaps #mg-popular-content in place — its scroll
+    // position in the page doesn't move, so if you were scrolled down the
+    // browsing table, the freshly-loaded content renders off-screen above
+    // you. This brings the container's top into view (offset for the fixed
+    // WP admin toolbar) every time content changes.
+    function scrollToContainer() {
+        var adminBar = document.getElementById( 'wpadminbar' );
+        var offset   = adminBar ? adminBar.offsetHeight : 0;
+        var top      = container.getBoundingClientRect().top + window.pageYOffset - offset - 10;
+        window.scrollTo( { top: Math.max( 0, top ), behavior: 'smooth' } );
+    }
+
     function showLoading() {
         container.innerHTML = '';
         var p = document.createElement( 'p' );
         p.className = 'mg-drilldown-loading';
         p.textContent = mgPopularDashboard.i18n.loading;
         container.appendChild( p );
+        scrollToContainer();
     }
 
     function showError( text ) {
@@ -4442,6 +4447,7 @@ function mg_enqueue_popular_dashboard_script( $hook_suffix ) {
                     // AJAX handlers — same trust level as any other
                     // admin-rendered markup in this plugin.
                     container.innerHTML = data.data.html;
+                    scrollToContainer();
                 } else {
                     var message = ( data && data.data && data.data.message ) ? data.data.message : mgPopularDashboard.i18n.error;
                     showError( message );
@@ -4457,6 +4463,7 @@ function mg_enqueue_popular_dashboard_script( $hook_suffix ) {
             return;
         }
         container.innerHTML = historyStack.pop();
+        scrollToContainer();
     }
 
     function handleActivate( target ) {
